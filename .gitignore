@@ -1,9 +1,2 @@
 # Local config
 .claude/settings.local.json
-
-# Cloned open-source repos
-Megatron-LM/
-Megatron-Bridge/
-TransformerEngine/
-verl/
-vllm/

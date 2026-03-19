@@ -1,8 +1,6 @@
-# Megatron 技术笔记
+# fp8_param_gather 参数详解
 
-## fp8_param_gather 参数详解
-
-### 参数定义
+## 参数定义
 
 ```
 --fp8-param-gather: Keep the compute param in fp8 (do not use any other intermediate
@@ -11,7 +9,7 @@
 
 来源: `Megatron-LM/megatron/training/arguments.py:1541-1543`
 
-### 使用前提条件
+## 使用前提条件
 
 只能与以下之一配合使用：
 - `--use-distributed-optimizer`
@@ -21,7 +19,7 @@
 
 来源: `Megatron-LM/megatron/training/arguments.py:737-739`
 
-### 开启 vs 关闭对比
+## 开启 vs 关闭对比
 
 | 方面 | fp8_param_gather=False (默认) | fp8_param_gather=True |
 |------|------------------------------|----------------------|
@@ -31,7 +29,7 @@
 | 量化时机 | 每次 forward 动态量化 | 优化器步骤后一次量化 |
 | 显存占用 | 需要 BF16 参数副本 | 无需额外副本 |
 
-### 参数更新流程
+## 参数更新流程
 
 **fp8_param_gather = False（默认）：**
 ```
@@ -55,7 +53,7 @@ FP8 model_param（直接存储为FP8）
 直接用于计算
 ```
 
-### 对计算精度的影响
+## 对计算精度的影响
 
 **对 Forward/Backward 计算精度没有直接影响。**
 
@@ -64,7 +62,7 @@ FP8 model_param（直接存储为FP8）
 2. 无论该 flag 开启与否，TransformerEngine 的 GEMM 计算都在 FP8 精度下执行
 3. 优化器状态（main_param）始终保持 FP32，这是混合精度训练的核心保证
 
-### 对参数更新的影响
+## 对参数更新的影响
 
 `fp8_param_gather` 影响的是从 FP32 main_param 到 model_param 的转换路径：
 
@@ -79,7 +77,7 @@ quantize_param_shard(
 )
 ```
 
-### 推荐配置
+## 推荐配置
 
 对于 MXFP8 训练，官方建议同时开启：
 - `--fp8-param-gather`
@@ -93,7 +91,7 @@ will use significant amount additional GPU memory.
 
 来源: `Megatron-LM/megatron/core/optimizer/optimizer_config.py:369-372`
 
-### 注意事项
+## 注意事项
 
 - FSDP2 + TE 2.0.0 目前不支持 FP8 param gather，会自动回退到 BF16
 - 来源: `Megatron-LM/megatron/training/arguments.py:707-711`
