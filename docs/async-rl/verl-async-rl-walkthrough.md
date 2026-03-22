@@ -16,7 +16,7 @@
 |------|-------------|---------|
 | **Rollout Buffer** | Bounded async queue (深度由 staleness_threshold 控制) | 激进 — 真正的多 batch in-flight |
 | **权重同步** | NCCL broadcast + bucketing, abort→sleep→sync→wake→resume | 中等 — abort in-flight 而非 drain |
-| **Staleness 管理** | Rollout correction (TIS + rejection sampling)，可选 MIS | 中等偏丰富 — IS 加权 + 拒绝采样 + 多版本 |
+| **Staleness 管理** | Depth bounding + rollout correction (TIS + rejection sampling)，可选 MIS；带版本追踪但不做按版本差硬丢弃 | 中等偏丰富 — 深度限流 + IS 加权 + 拒绝采样 + 多版本 |
 | **Partial Rollout** | Abort + application-level prefix continuation | 中等 — 与 SLIME/SkyRL 同类，但有跨版本追踪 |
 
 ### 与 SLIME 的关键差异
@@ -469,9 +469,54 @@ Scheduler 侧 (`scheduler.py:2989-3086`):
 
 ---
 
-## 第 5 步：Staleness 管理 — Rollout Correction
+## 第 5 步：Staleness 管理 — 先对齐 Blog，再看 verl 代码
 
-### 5a. Rollout Correction Helper
+HuggingFace 那篇 blog 把 staleness management 分成 3 个正交策略。对应到 verl fully async 主路径，更准确的映射是：
+
+| Blog 策略 | verl 是否支持 | 在代码里的对应物 |
+|-----------|---------------|------------------|
+| **Strategy 1: Per-sample version rejection** | **不做精确实现** | sample 确实带有版本信息（`global_steps` / `min/max_global_steps`），trainer 也会统计 stale trajectory；但没有看到 `current_version - sample_version > K` 就在训练前硬丢弃的主路径逻辑 |
+| **Strategy 2: Depth Bounding** | **支持，而且是核心机制** | `staleness_threshold` + `max_required_samples` + bounded `MessageQueue` + rollouter pause/backpressure，从系统深度上限制最多能积压多少 stale samples |
+| **Strategy 3: IS-weighted loss correction** | **支持** | `rollout_corr_helper.py` 里的 TIS、rejection sampling，以及 `trigger_parameter_sync_step > 1` 时的 MIS |
+
+> **关键澄清**: 我们之前这一节主要展开了 Strategy 3，但 verl 并不是“只有 IS correction”。它同时明显实现了 **Strategy 2（深度限流）**。反过来，它虽然记录 sample 的版本号，但 **没有实现 blog 所说的 Strategy 1 那种按版本差阈值硬丢弃**。
+
+### 5a. Strategy 2 — Depth Bounding（系统级深度限流）
+
+**文件**: `experimental/fully_async_policy/fully_async_rollouter.py`
+
+`staleness_threshold` 不是“训练时按 sample version 做过滤”，而是直接参与计算系统里允许存在的最大样本深度：
+
+```python
+self.max_required_samples = int(
+    self.required_samples
+    * (self.staleness_threshold + 1)
+    * self.config.async_training.trigger_parameter_sync_step
+)
+self.max_queue_size = self.max_required_samples
+```
+
+Rollouter 在 streaming 生成时会不断检查两个暂停条件：
+
+```python
+if queue_size >= self.max_queue_size:
+    return True
+
+if self.staleness_samples >= self.max_required_samples:
+    return True
+```
+
+每次参数同步后，rollouter 还会把 `staleness_samples` 重置成“当前 in-flight task 数 + queue 中尚未消费的样本数”：
+
+```python
+self.staleness_samples = len(self.active_tasks) + await self.message_queue_client.get_queue_size()
+```
+
+> **[维度 4: Strategy 2]** 这正是 blog 里的 **Depth Bounding**：不用在 trainer 入口逐个检查 sample 的版本差，而是在架构层面限制 pipeline depth，从而限制最坏 staleness。
+>
+> **补充**: `MessageQueue` 满时会 `popleft()` 丢最老样本，但这是 queue overflow 的物理保护，不是“版本差超过阈值”的语义化 hard rejection。
+
+### 5b. Strategy 3 — Rollout Correction Helper
 
 **文件**: `trainer/ppo/rollout_corr_helper.py`
 
@@ -479,11 +524,17 @@ Scheduler 侧 (`scheduler.py:2989-3086`):
 
 | 函数 | 作用 |
 |------|------|
-| `compute_rollout_correction_weights()` (L481) | 计算 truncated IS weights |
-| `compute_rollout_rejection_mask()` (L605) | 计算 rejection sampling mask |
-| `compute_rollout_correction_and_rejection_mask()` (L716) | 统一接口：IS + rejection |
+| `compute_rollout_correction_weights()` | 计算 truncated IS weights |
+| `compute_rollout_rejection_mask()` | 计算 rejection sampling mask |
+| `compute_rollout_correction_and_rejection_mask()` | 统一接口：IS + rejection |
 
-### 5b. TIS — Truncated Importance Sampling
+训练主循环里会显式调用这套逻辑：
+
+```python
+batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
+```
+
+### 5c. TIS — Truncated Importance Sampling
 
 `rollout_corr_helper.py:481-540`:
 ```python
@@ -491,71 +542,93 @@ def compute_rollout_correction_weights(log_ratio, response_mask, rollout_is="tok
     # log_ratio = log(π_train / π_rollout)
 
     if rollout_is == "token":
-        # Per-token IS: exp(log_ratio)，逐 token 独立
         rollout_is_weights = torch.exp(torch.clamp(log_ratio, -20, 20))
-
     elif rollout_is == "sequence":
-        # Sequence-level IS: exp(sum(log_ratio))，整条序列一个权重
         log_ratio_sum = masked_sum(log_ratio, response_mask, axis=-1).unsqueeze(-1)
         rollout_is_weights = torch.exp(torch.clamp(log_ratio_sum, -20, 20))
 
-    # 截断：clamp 到 [0, threshold]
     rollout_is_weights = torch.clamp(rollout_is_weights, max=rollout_is_threshold)
 ```
 
 > **与 SLIME TIS 对比**: 机制相同（exp ratio → clamp），但 verl 额外支持 sequence-level aggregation 和 batch normalization。SLIME 只有 token-level。
 
-### 5c. Rejection Sampling
+### 5d. Rejection Sampling
 
 `rollout_corr_helper.py:605+`:
 
 verl 支持多种 rejection 策略（通过 `rollout_rs` 配置）：
-- `token_k*`: token-level KL 超限 → mask 整条序列
-- `seq_sum_k*` / `seq_mean_k*` / `seq_max_k*`: sequence-level KL 超限 → mask
-- 阈值格式: `lower_upper`，指定 IS ratio 的上下界
+- `token_k*`: token-level divergence 超限
+- `seq_sum_k*` / `seq_mean_k*` / `seq_max_k*`: sequence-level divergence 超限
+- 阈值格式: `lower_upper` 或单侧上界
 
-被 reject 的序列其 `response_mask` 被置 0，不参与 loss 计算。
+被 reject 的 token / sequence 会通过修改 `response_mask` 被排除在 loss 外。
 
-> **与 SLIME 对比**: SLIME 用 OPSM（advantage<0 且 KL>δ 才 mask），是一种"只 mask 有害的 off-policy 样本"的策略。verl 的 rejection sampling 更通用——纯按 KL divergence 过滤，不看 advantage 方向。
+> **注意**: 这里的 rejection sampling 属于 **Strategy 3 的一部分**，它是基于 `π_train / π_rollout` 的偏移做 filtering，不是 blog Strategy 1 那种“按 sample version 落后多少版本”做硬丢弃。
+>
+> **与 SLIME 对比**: SLIME 用 OPSM（advantage<0 且 KL>δ 才 mask），是一种“只 mask 有害 off-policy token”的策略。verl 的 rejection sampling 更通用，但不看 advantage 方向。
 
-### 5d. bypass_mode — 跳过 old_log_prob 重算
+### 5e. bypass_mode — 跳过 old_log_prob 重算
 
 `rollout_corr_helper.py:1039-1074`:
 
 当 `rollout_correction.bypass_mode=True` 时：
 ```python
 def apply_bypass_mode(batch, rollout_corr_config, policy_loss_config):
-    # 不用当前策略重算 old_log_prob
-    # 直接用 rollout 时记录的 rollout_log_probs 作为 old_log_prob
     batch.batch["old_log_probs"] = batch.batch["rollout_log_probs"]
     policy_loss_config["loss_mode"] = "bypass_mode"
 ```
 
 > **含义**: 省一次 forward pass，但 old_log_prob 和训练策略可能有偏移。适合 staleness 不大的场景。
 
-### 5e. MIS — Multi-version Importance Sampling
+### 5f. MIS — Multi-version Importance Sampling
 
 **文件**: `fully_async_trainer.py:473-493`
 
-当 `trigger_parameter_sync_step > 1` 时，一个 weight version 内会有多个 train step，每步的 batch 是在同一版本的 rollout policy 下生成的。但随着 train step 推进，actor 权重在变化。MIS 确保每步都能正确计算 IS ratio：
+当 `trigger_parameter_sync_step > 1` 时，一个 weight version 内会有多个 train step，每步 batch 都来自同一 rollout policy 版本；但 actor 已经继续更新。MIS 确保 old policy log-prob 仍然用“对应 rollout 版本”的权重来算：
 
 ```python
 def _compute_old_log_prob(self, batch):
     if self.local_trigger_step == 1:
-        # 第一步：保存当前权重到 CPU（作为 version 1）
         self.actor_rollout_wg.save_model_to_cpu(1)
         old_log_prob = super()._compute_old_log_prob(batch)
     else:
-        # 后续步骤：
-        self.actor_rollout_wg.save_model_to_cpu(self.local_trigger_step)  # 保存当前版本
-        self.actor_rollout_wg.restore_model_from_cpu(1)                   # 恢复 version 1
-        old_log_prob = super()._compute_old_log_prob(batch)                # 用 version 1 算 old_log_prob
-        self.actor_rollout_wg.restore_model_from_cpu(self.local_trigger_step)  # 恢复当前版本
+        self.actor_rollout_wg.save_model_to_cpu(self.local_trigger_step)
+        self.actor_rollout_wg.restore_model_from_cpu(1)
+        old_log_prob = super()._compute_old_log_prob(batch)
+        self.actor_rollout_wg.restore_model_from_cpu(self.local_trigger_step)
         self.actor_rollout_wg.clear_cpu_model(self.local_trigger_step)
     return old_log_prob
 ```
 
-> **[维度 4: MIS]** 这是 verl 独有的机制。SLIME 没有 MIS —— 它每个 rollout 只训练一步就同步权重。verl 允许多步训练（`trigger_parameter_sync_step > 1`），用 CPU 缓存多版本权重来保持 IS ratio 的正确性。代价是 CPU 内存 + GPU↔CPU 拷贝。
+> **[维度 4: MIS]** 这是 verl 比较有特色的部分。它不属于 blog 单列的前三种策略之一，但可以视为 Strategy 3 在“多训练步 / 多版本 old policy”场景下的延伸：用 CPU 缓存多版本权重，保证 IS ratio 的基准版本是对的。
+
+### 5g. Strategy 1 在 verl 里处于什么状态？
+
+verl 不是完全没有“按 sample 记录版本号”。实际上：
+
+- rollout server 会给输出打上 `extra_fields["global_steps"]`
+- partial rollout 会进一步记录 `min_global_steps` / `max_global_steps`
+- trainer 会统计 `trajectory_param_versions`、`stale_trajectory_processed`、`partial_ratio` 等指标
+
+但这些版本字段当前主要用于：
+
+1. 监控一个 batch 里混入了多少 stale / partial trajectories
+2. 给 partial rollout 提供“跨了多少个参数版本”的可观测性
+3. 让 trainer 统计 stale trajectory 数量
+
+**它们没有在 fully async 主路径里被用来实现**：
+
+```python
+if current_param_version - sample_version > K:
+    drop(sample)
+```
+
+这样的 per-sample version rejection。
+
+> **结论**: 如果严格按 blog 的 taxonomy 来标，verl fully async 的 Staleness Management 应写成：
+> - **Strategy 2: yes**
+> - **Strategy 3: yes**
+> - **Strategy 1: no exact hard-drop implementation in the main path**
 
 ---
 

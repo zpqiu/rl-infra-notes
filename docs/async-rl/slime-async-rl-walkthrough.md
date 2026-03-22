@@ -16,7 +16,7 @@
 |------|-------------|---------|
 | **Rollout Buffer** | Double-buffer (深度=1) | 保守 — staleness 最多 1 步 |
 | **权重同步** | NCCL broadcast + bucketing, pause→flush→sync→continue | 中等 — 有 bucketing 优化但需要暂停推理 |
-| **Staleness 管理** | TIS + OPSM (loss 层修正，无版本拒绝) | 中等 — 不浪费 compute 但也不完全信任 off-policy data |
+| **Staleness 管理** | 双重机制：double-buffer(depth=1) + TIS/OPSM；记录 version 但默认不做 per-sample rejection | 中等偏保守 — 先用结构把 lag 压到 1 步，再用 loss 修正残余 off-policy |
 | **Partial Rollout** | Abort + recycle + off-policy token masking | 中等 — 比丢弃好，但不如 per-forward-pass 切换 |
 
 ## 文件阅读顺序
@@ -164,7 +164,9 @@ async def generate(args, sample, sampling_params):
 > - `rollout_log_probs`：生成时策略 π_old 的 token-level log prob，后续 TIS 用它算 IS ratio
 > - `weight_versions`：记录生成这个 sample 时推理引擎的权重版本号
 >
-> 这些是 staleness 修正的"原材料"，在训练阶段被消费。
+> 但两者用途不同：
+> - `rollout_log_probs` 会在训练 loss 中真正参与 TIS/OPSM 计算
+> - `weight_versions` 在默认主路径里主要用于追踪/观测，不会按 version gap 做 per-sample hard drop
 
 ### 2c. 过采样 + 动态过滤 + Abort
 
@@ -428,9 +430,15 @@ pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, eps_clip, eps_cli
 > tis_weights = clamp(tis, tis_clip_low, tis_clip)  # 截断
 > pg_loss = pg_loss * tis_weights                    # 加权修正
 > ```
-> 还有 `icepop_function` (line 587)：超出截断范围直接置零（hard rejection 变体）。
+> 还有 `icepop_function` (line 587)：超出截断范围直接置零。这仍然是 **loss 层的 IS/RS 变体**，不是按 `weight_version` 做的 per-sample version rejection。
 
 **执行顺序**: 先 OPSM 置零 → 再 TIS 加权。两者解耦，可独立开关。
+
+> **更准确地说，SLIME 默认主路径同时用了 blog 里的两种 staleness 策略**：
+> - **Strategy 2: Depth Bounding**。`train_async.py` 只有一个 `rollout_data_next_future`，形成 one-step-ahead 的 double-buffer；而且在 `update_weights()` 前会先 `ray.get(future)` drain 掉 in-flight rollout，因此结构上把 policy lag 限制在最多 1 个 rollout step。
+> - **Strategy 3: IS-weighted loss correction**。即这里的 TIS + OPSM。
+>
+> **没有默认实现的是 Strategy 1: Per-sample version rejection**。代码会记录 `weight_versions`，但默认训练路径并不会基于 version gap 丢弃 sample。
 
 ### 4d. Backward + Optimizer Step
 

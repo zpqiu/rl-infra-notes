@@ -16,7 +16,7 @@
 |------|----------------|---------|
 | **Rollout Buffer** | Replay Buffer（深度=max_trajectory_age_steps，默认 1） | 灵活 — 1 步时等价 double-buffer，可调至 8 步 |
 | **权重同步** | NCCL collective broadcast（非 colocate）/ ZMQ IPC（colocate），支持 in-flight weight update | 激进 — 可在推理进行中更新权重 |
-| **Staleness 管理** | Importance Sampling correction（TIS/ICE-POP/seq-mask-TIS），weight version 追踪 | 中等偏激进 — 多种 IS 策略可选 |
+| **Staleness 管理** | Hybrid：version-aware filtering（target match + age window）+ required IS correction | 中等偏保守 — 先筛掉不该进入当前步的样本，再用 IS 修正残余 off-policy |
 | **Partial Rollout** | 无 abort/recycle — 所有 sample 独立完成后入 buffer | 保守 — 不存在 partial rollout |
 
 ## 文件阅读顺序
@@ -199,6 +199,8 @@ def _calculate_target_weights(self, generation_weight_version):
 > - 每条 trajectory 不只记录"用哪个权重版本**生成**"(`trajectory_version`)，还标注"**目标服务**哪个训练步"(`target_weight_version`)
 > - Buffer 采样时只取 `target_weight_version == current_weight_version` 的数据
 > - 这确保每个训练步拿到的数据是"被设计服务于该步"的，避免随机 staleness
+>
+> 这已经不只是"version tracking"，而是**真正参与采样/过滤的 version-aware filtering**：哪些旧样本能进入当前训练步，不是交给 loss 再兜底，而是在 buffer 侧先被显式约束。
 
 `async_utils.py:323-342` — `_get_next_target_for_generation()`:
 ```python
@@ -235,6 +237,8 @@ def _process_batch(self, batch):
 并发控制：
 - `_inflight_sema`: Semaphore，上限为 `num_prompts_per_step × max_trajectory_age_steps`
 - 每个 worker thread 独立运行一个 prompt group 的完整 rollout
+
+> **Batch 边界不是同步屏障**：`_process_batch()` 只 spawn 线程，不 join — 返回后 `_collection_loop` 立即取下一个 batch。跨 batch 的 prompt group 可以并发 in-flight。真正的流控是 semaphore（prompt 粒度）、generation limit（target weight 粒度）和 refit pause（权重同步期间），而非 batch 完成。
 
 ### 2d. 单个 prompt group 的生成
 
@@ -315,6 +319,12 @@ def sample(self, num_prompt_groups, current_weight_version, max_age_steps):
 > - **Age window**：超过 `max_age_steps` 的数据视为过时，触发 ValueError
 > - **Stall semantics**：数据不够就 stall 训练，宁可等也不凑合 — 保守但稳定
 > - **avg_trajectory_age** 作为 metric 返回，反映 off-policy 程度
+>
+> 如果严格只看 **staleness management** 本身，而不把一般性的并发/容量控制混进来，NeMo-RL 默认 async 路径主要用了两类机制：
+> - **Strategy 1: Per-sample version rejection / filtering**：`target_weight_version == current_weight_version` 的 target matching，加上 `trajectory_version` 的 age window，决定哪些样本能进当前步。这是 **sample filtering**。
+> - **Strategy 3: IS-weighted loss correction**：后面的 TIS / ICE-POP / seq-mask-TIS
+>
+> `ReplayBuffer` 大小、`_inflight_sema`、以及后台 collector 的流控，更适合放在 **Rollout Buffer / Orchestration** 维度理解；它们会间接影响 stale backlog，但不是直接决定样本是否被当前训练步接纳的规则。
 
 ---
 
@@ -565,7 +575,8 @@ loss = masked_mean(importance_weights * clip_loss, mask)
 >
 > 与 SLIME 的对比：
 > - SLIME 用 **TIS + OPSM** 两层修正（先序列级 mask，再 token 级加权）
-> - NeMo-RL 用 **单一 IS correction** 但提供三种变体可选
+> - **但 NeMo-RL 的整体 staleness 管理并不只是 loss 层 IS**：默认 async 路径在进入 loss 前，已经通过 replay buffer 的 target matching、age window 和 in-flight/buffer 深度做过系统层约束
+> - loss 层这一段则提供 **TIS / ICE-POP / seq-mask-TIS** 三种 IS 变体可选
 > - NeMo-RL 的 `seq-mask-tis` 类似 SLIME 的 OPSM（序列级门控），但基于 IS ratio 而非 KL + advantage
 
 ### 6e. 额外支持：Sequence-level IS（GSPO）
@@ -729,6 +740,6 @@ policy:
 | **权重同步** | pause→flush→bucketed NCCL broadcast | NCCL collective broadcast via vLLM `collective_rpc` |
 | **In-flight 更新** | 不支持（必须 drain in-flight） | 支持（`in_flight_weight_updates: true`） |
 | **Partial Rollout** | Abort + recycle + off-policy mask | 不支持 |
-| **Staleness 修正** | TIS + OPSM（两层修正） | IS correction: TIS / ICE-POP / seq-mask-TIS |
+| **Staleness 修正** | depth=1 + TIS + OPSM | version-aware filtering + IS correction |
 | **版本追踪** | `weight_versions` per sample | `trajectory_version` + `target_weight_version` per prompt group |
 | **KV cache 策略** | flush_cache before sync | 可选 invalidate（AREAL vs Magistral） |

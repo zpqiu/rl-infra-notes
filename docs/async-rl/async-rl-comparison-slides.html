@@ -1,0 +1,1626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Async RL 框架对比：SLIME / NeMo-RL / verl</title>
+<style>
+  /* ============ Reset & Base ============ */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #eef1f5;
+    --bg-slide: #ffffff;
+    --bg-card: #f6f8fb;
+    --bg-card-hover: #eef1f6;
+    --text: #334155;
+    --text-bright: #0f172a;
+    --text-dim: #64748b;
+    --border: #d8dce6;
+    --accent: #5b5fc7;
+
+    --slime: #16a34a;
+    --slime-bg: rgba(22,163,74,0.07);
+    --slime-border: rgba(22,163,74,0.30);
+
+    --nemo: #2563eb;
+    --nemo-bg: rgba(37,99,235,0.07);
+    --nemo-border: rgba(37,99,235,0.30);
+
+    --verl: #ea580c;
+    --verl-bg: rgba(234,88,12,0.07);
+    --verl-border: rgba(234,88,12,0.30);
+
+    --red: #dc2626;
+    --yellow: #ca8a04;
+    --green: #16a34a;
+  }
+
+  html { font-size: 16px; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ============ Slide Container ============ */
+  .deck {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 3rem 5rem;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.45s ease, transform 0.45s ease;
+    transform: translateX(40px);
+    background: var(--bg-slide);
+  }
+
+  .slide.active {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(0);
+  }
+
+  /* ============ Typography ============ */
+  h1 {
+    font-size: 2.8rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  h2 {
+    font-size: 1.85rem;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-bottom: 1.5rem;
+    letter-spacing: -0.01em;
+  }
+
+  h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-bottom: 0.5rem;
+  }
+
+  p, li {
+    font-size: 1.05rem;
+    line-height: 1.65;
+    color: var(--text);
+  }
+
+  .subtitle {
+    font-size: 1.25rem;
+    color: var(--text-dim);
+    margin-bottom: 2rem;
+    font-weight: 400;
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 4px;
+    font-size: 1.0rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+
+  .tag-slime  { background: var(--slime-bg); color: var(--slime); border: 1px solid var(--slime-border); }
+  .tag-nemo   { background: var(--nemo-bg);  color: var(--nemo);  border: 1px solid var(--nemo-border); }
+  .tag-verl   { background: var(--verl-bg);  color: var(--verl);  border: 1px solid var(--verl-border); }
+
+  code {
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    background: rgba(0,0,0,0.04);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.9em;
+    color: var(--accent);
+  }
+
+  strong { color: var(--text-bright); font-weight: 600; }
+
+  /* ============ Layout Helpers ============ */
+  .cols { display: flex; gap: 1.5rem; }
+  .cols-2 > * { flex: 1; }
+  .cols-3 > * { flex: 1; }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.4rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+
+  .card-slime  { border-color: var(--slime-border); }
+  .card-nemo   { border-color: var(--nemo-border); }
+  .card-verl   { border-color: var(--verl-border); }
+
+  .card h3 { margin-bottom: 0.6rem; }
+
+  ul { list-style: none; padding: 0; }
+  ul li { position: relative; padding-left: 1.2em; margin-bottom: 0.35em; }
+  ul li::before {
+    content: "›";
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .card-slime ul li::before { color: var(--slime); }
+  .card-nemo  ul li::before { color: var(--nemo); }
+  .card-verl  ul li::before { color: var(--verl); }
+
+  /* ============ Table ============ */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 1.0rem;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  th {
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.88rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  td { color: var(--text); }
+
+  tr:last-child td { border-bottom: none; }
+
+  .table-wrap {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+
+  .table-wrap table { margin: 0; }
+  .table-wrap th { background: rgba(0,0,0,0.03); }
+
+  .cell-slime { color: var(--slime); }
+  .cell-nemo  { color: var(--nemo); }
+  .cell-verl  { color: var(--verl); }
+
+  /* ============ Diagram / SVG ============ */
+  .diagram {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 1rem 0;
+  }
+
+  .diagram svg { max-width: 100%; height: auto; }
+
+  /* ============ Timeline Bar ============ */
+  .timeline-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .timeline-label {
+    width: 90px;
+    font-size: 1.0rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-align: right;
+    padding-right: 12px;
+    flex-shrink: 0;
+  }
+
+  .timeline-track {
+    flex: 1;
+    height: 34px;
+    position: relative;
+    background: rgba(0,0,0,0.02);
+    border-radius: 4px;
+  }
+
+  .timeline-block {
+    position: absolute;
+    top: 2px;
+    height: 30px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #fff;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .timeline-block.gen  { background: var(--accent); }
+  .timeline-block.train { background: var(--yellow); }
+  .timeline-block.idle { background: rgba(0,0,0,0.04); color: var(--text-dim); }
+  .timeline-block.gen-slime  { background: var(--slime); }
+  .timeline-block.gen-nemo   { background: var(--nemo); }
+  .timeline-block.gen-verl   { background: var(--verl); }
+  .timeline-block.train-slime { background: rgba(74,222,128,0.45); color: var(--text-bright); }
+  .timeline-block.abort-slime {
+    background: repeating-linear-gradient(
+      -45deg, rgba(74,222,128,0.35), rgba(74,222,128,0.35) 3px,
+      rgba(74,222,128,0.10) 3px, rgba(74,222,128,0.10) 7px);
+    color: var(--slime); font-size: 0.78rem;
+  }
+  .timeline-block.recycle-slime {
+    background: rgba(74,222,128,0.22);
+    border: 1.5px dashed var(--slime-border);
+    color: var(--slime); font-size: 0.78rem;
+  }
+  .timeline-block.train-nemo  { background: rgba(96,165,250,0.45); color: var(--text-bright); }
+  .timeline-block.train-verl  { background: rgba(251,146,60,0.45); color: var(--text-bright); }
+  .timeline-block.buf-nemo  { background: rgba(96,165,250,0.2); border: 1px dashed var(--nemo-border); color: var(--nemo); }
+  .timeline-block.queue-verl { background: rgba(251,146,60,0.2); border: 1px dashed var(--verl-border); color: var(--verl); }
+
+  /* Buffer data blocks — solid, no gradients */
+  .timeline-block.buf-data {
+    font-size: 0.82rem; font-weight: 600;
+  }
+  .buf-data.slime  { background: rgba(74,222,128,0.22);  border: 1.5px solid var(--slime-border); color: var(--slime); }
+  .buf-data.nemo   { background: rgba(96,165,250,0.18);  border: 1.5px solid var(--nemo-border);  color: var(--nemo); }
+
+  /* Buffer sample-level blocks (NeMo-RL disordered pool) */
+  .timeline-block.buf-s {
+    border-radius: 3px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    background: rgba(96,165,250,0.18);
+    border: 1px solid var(--nemo-border);
+    color: var(--nemo);
+  }
+  .buf-s.hl { background: rgba(251,191,36,0.22); border-color: rgba(251,191,36,0.50); color: var(--yellow); }
+  .buf-s.verl { background: rgba(251,146,60,0.18); border-color: var(--verl-border); color: var(--verl); }
+  .buf-s.verl.hl { background: rgba(251,146,60,0.32); border-color: rgba(251,146,60,0.55); }
+  .buf-s.evict { opacity: 0.40; text-decoration: line-through; background: rgba(248,113,113,0.10); border-color: rgba(248,113,113,0.30); color: var(--red); }
+
+  /* Buffer state separator & label */
+  .buf-state-label {
+    position: absolute;
+    top: -13px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .buf-state-sep {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1.5px dashed var(--border);
+  }
+  .buf-data.verl   { background: rgba(251,146,60,0.18);  border: 1.5px solid var(--verl-border);  color: var(--verl); }
+  .buf-data.hold   { border-width: 2px; }
+
+  /* Sync marker (inline in Train row) */
+  .timeline-block.sync-mk {
+    background: rgba(251,191,36,0.15);
+    border: 1.5px dashed rgba(251,191,36,0.55);
+    color: var(--yellow); font-size: 0.78rem; font-weight: 700;
+  }
+
+  /* Pause/backpressure marker */
+  .timeline-block.pause-mk {
+    background: rgba(248,113,113,0.10);
+    border: 1.5px dashed rgba(248,113,113,0.40);
+    color: var(--red); font-size: 0.78rem; font-weight: 600;
+  }
+
+  .timeline-group {
+    margin-bottom: 1.8rem;
+    padding-bottom: 1.4rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .timeline-group:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+
+  .timeline-group-title {
+    font-size: 1.0rem;
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+  }
+
+  /* ============ Flow Diagram ============ */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0.4rem 0;
+  }
+
+  .flow-step {
+    padding: 0.35rem 0.7rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.92rem;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .flow-arrow {
+    color: var(--text-dim);
+    font-size: 1.0rem;
+  }
+
+  .flow-step.highlight { border-color: var(--accent); color: var(--accent); }
+  .flow-step.hl-slime { border-color: var(--slime); color: var(--slime); }
+  .flow-step.hl-nemo  { border-color: var(--nemo);  color: var(--nemo); }
+  .flow-step.hl-verl  { border-color: var(--verl);  color: var(--verl); }
+
+  /* ============ Badge ============ */
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .badge-conservative { background: rgba(74,222,128,0.15); color: var(--green); }
+  .badge-moderate     { background: rgba(251,191,36,0.15);  color: var(--yellow); }
+  .badge-aggressive   { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  /* ============ Metric ============ */
+  .metric {
+    text-align: center;
+    padding: 0.8rem;
+  }
+
+  .metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    line-height: 1;
+    margin-bottom: 0.3rem;
+  }
+
+  .metric-label {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* ============ Callout ============ */
+  .callout {
+    background: rgba(91,95,199,0.07);
+    border-left: 3px solid var(--accent);
+    padding: 0.8rem 1rem;
+    border-radius: 0 6px 6px 0;
+    margin: 0.8rem 0;
+    font-size: 1.0rem;
+  }
+
+  .callout strong { color: var(--accent); }
+
+  .key-point {
+    margin-top: 0.9rem;
+    padding: 0.8rem 0.95rem;
+    border-radius: 8px;
+    font-size: 1.0rem;
+    line-height: 1.55;
+    border: 1px solid var(--border);
+    background: rgba(0,0,0,0.03);
+    color: var(--text-bright);
+  }
+  .key-point strong { color: var(--text-bright); }
+  .key-point.slime { border-color: var(--slime-border); background: var(--slime-bg); }
+  .key-point.nemo  { border-color: var(--nemo-border);  background: var(--nemo-bg); }
+  .key-point.verl  { border-color: var(--verl-border);  background: var(--verl-bg); }
+
+  /* ============ Progress Bar ============ */
+  .progress {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    height: 3px;
+    background: var(--accent);
+    transition: width 0.4s ease;
+    z-index: 100;
+  }
+
+  /* ============ Slide Number ============ */
+  .slide-number {
+    position: fixed;
+    bottom: 12px;
+    right: 20px;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    font-weight: 600;
+    z-index: 100;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ============ Nav Hint ============ */
+  .nav-hint {
+    position: fixed;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    opacity: 0.5;
+    z-index: 100;
+  }
+
+  /* ============ Title Slide Special ============ */
+  .slide-title {
+    text-align: center;
+    justify-content: center;
+  }
+
+  .slide-title h1 {
+    font-size: 3.2rem;
+    margin-bottom: 1rem;
+    background: linear-gradient(135deg, var(--slime), var(--nemo), var(--verl));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .slide-title .framework-badges {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+
+  .slide-title .framework-badges .tag { font-size: 1.0rem; padding: 0.3rem 1rem; }
+
+  .slide-title .meta {
+    font-size: 1.0rem;
+    color: var(--text-dim);
+    margin-top: 2rem;
+  }
+
+  /* ============ VS indicator ============ */
+  .vs {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-dim);
+  }
+
+  /* ============ Spectrum bar ============ */
+  .spectrum {
+    position: relative;
+    height: 8px;
+    background: linear-gradient(90deg, var(--green), var(--yellow), var(--red));
+    border-radius: 4px;
+    margin: 0.5rem 0 0.3rem;
+  }
+
+  .spectrum-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+  }
+
+  .spectrum-marker {
+    position: absolute;
+    top: -4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-slide);
+    transform: translateX(-50%);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  }
+
+  .spectrum-marker.m-slime { background: var(--slime); }
+  .spectrum-marker.m-nemo  { background: var(--nemo); }
+  .spectrum-marker.m-verl  { background: var(--verl); }
+
+  /* ============ Decision tree ============ */
+  .dtree {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    font-size: 0.95rem;
+  }
+
+  .dtree-node {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .dtree-icon {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    margin-top: 2px;
+  }
+
+  .dtree-icon.q { background: rgba(91,95,199,0.12); color: var(--accent); }
+  .dtree-icon.a { background: rgba(74,222,128,0.2);   color: var(--green); }
+
+  /* ============ Responsive ============ */
+  @media (max-width: 1024px) {
+    .slide { padding: 2rem 2.5rem; }
+    h1 { font-size: 2rem; }
+    h2 { font-size: 1.4rem; }
+    .cols { flex-direction: column; }
+  }
+
+  /* ============ Annotation line ============ */
+  .anno {
+    font-size: 0.92rem;
+    color: var(--text-dim);
+    margin-top: 0.3rem;
+    font-style: italic;
+  }
+
+  /* ============ Section Divider ============ */
+  .slide-section {
+    text-align: center;
+    justify-content: center;
+  }
+
+  .slide-section h2 {
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .section-dim {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  /* ============ Comparison row ============ */
+  .cmp-row {
+    display: grid;
+    grid-template-columns: 100px 1fr 1fr 1fr;
+    gap: 0.8rem;
+    align-items: start;
+    padding: 0.7rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cmp-row:last-child { border-bottom: none; }
+
+  .cmp-label {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    padding-top: 0.2rem;
+  }
+
+  .cmp-cell {
+    font-size: 0.95rem;
+    line-height: 1.5;
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+  }
+
+  .cmp-cell-slime { background: var(--slime-bg); }
+  .cmp-cell-nemo  { background: var(--nemo-bg); }
+  .cmp-cell-verl  { background: var(--verl-bg); }
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+<!-- ==================== SLIDE 1: Title ==================== -->
+<div class="slide slide-title active" data-slide="0">
+  <h1>Async RL 框架对比</h1>
+  <p class="subtitle">训练与推理解耦后的四个核心设计维度</p>
+  <div class="framework-badges">
+    <span class="tag tag-slime">SLIME</span>
+    <span class="tag tag-nemo">NeMo-RL</span>
+    <span class="tag tag-verl">verl</span>
+  </div>
+  <p class="meta">
+    参考: <em>Keep the Tokens Flowing: Lessons from 16 Open-Source RL Libraries</em> (HuggingFace, 2026-03)
+  </p>
+</div>
+
+<!-- ==================== SLIDE 2: Why Async ==================== -->
+<div class="slide" data-slide="1">
+  <h2>为什么要 Async RL？</h2>
+  <p class="subtitle">核心矛盾：Long-tail rollout 导致 GPU 空泡，同步屏障放大等待</p>
+
+  <div style="margin-bottom: 1.5rem">
+    <h3 style="color:var(--text-dim); margin-bottom:0.8rem">Sync RL — Long-tail 空泡</h3>
+
+    <!-- Sample-level view: show varying rollout lengths -->
+    <div style="display:flex; align-items:flex-start; margin-bottom:0.6rem">
+      <div class="timeline-label" style="padding-top:2px">Batch 0<br><span style="font-size:0.8rem;font-weight:400">rollout</span></div>
+      <div style="flex:1; display:flex; flex-direction:column; gap:3px">
+        <div style="display:flex; align-items:center; gap:6px">
+          <div style="width:9%; height:14px; background:var(--accent); border-radius:3px; opacity:0.7"></div>
+          <span style="font-size:0.8rem; color:var(--text-dim)">s1 ✓</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px">
+          <div style="width:7%; height:14px; background:var(--accent); border-radius:3px; opacity:0.7"></div>
+          <span style="font-size:0.8rem; color:var(--text-dim)">s2 ✓</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px">
+          <div style="width:11%; height:14px; background:var(--accent); border-radius:3px; opacity:0.7"></div>
+          <span style="font-size:0.8rem; color:var(--text-dim)">s3 ✓</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px">
+          <div style="width:25%; height:14px; background:var(--accent); border-radius:3px"></div>
+          <span style="font-size:0.8rem; color:var(--red); font-weight:600">s4 long tail!</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- GPU timeline: split gen into productive + bubble -->
+    <div class="timeline-row">
+      <div class="timeline-label">GPU</div>
+      <div class="timeline-track">
+        <!-- Batch 0 gen: productive part + bubble -->
+        <div class="timeline-block gen" style="left:0%; width:10%">Gen</div>
+        <div class="timeline-block" style="left:10%; width:15%; background:rgba(220,38,38,0.08); border:1.5px dashed var(--red); color:var(--red); font-size:0.82rem">空泡：等 s4</div>
+        <!-- Train 0 -->
+        <div class="timeline-block train" style="left:27%; width:14%">Train</div>
+        <!-- Batch 1 gen: productive + bubble -->
+        <div class="timeline-block gen" style="left:43%; width:10%">Gen</div>
+        <div class="timeline-block" style="left:53%; width:15%; background:rgba(220,38,38,0.08); border:1.5px dashed var(--red); color:var(--red); font-size:0.82rem">空泡</div>
+        <!-- Train 1 -->
+        <div class="timeline-block train" style="left:70%; width:14%">Train</div>
+        <div class="timeline-block gen" style="left:86%; width:7%">Gen</div>
+        <div class="timeline-block" style="left:93%; width:6%; background:rgba(220,38,38,0.08); border:1.5px dashed var(--red); font-size:0.8rem; color:var(--red)">…</div>
+      </div>
+    </div>
+    <p class="anno">Batch 内大部分 sample 早已完成，但同步屏障必须等最慢的 long-tail sample → GPU 空转 <strong style="color:var(--red)">空泡</strong></p>
+  </div>
+
+  <div>
+    <h3 style="color:var(--text-dim); margin-bottom:0.8rem">Async RL — 物理隔离 + 并行</h3>
+    <div class="timeline-row">
+      <div class="timeline-label">Gen GPU</div>
+      <div class="timeline-track">
+        <div class="timeline-block gen" style="left:0%; width:18%">Gen 0</div>
+        <div class="timeline-block gen" style="left:19%; width:18%">Gen 1</div>
+        <div class="timeline-block gen" style="left:38%; width:18%">Gen 2</div>
+        <div class="timeline-block gen" style="left:57%; width:18%">Gen 3</div>
+        <div class="timeline-block gen" style="left:76%; width:18%">Gen 4</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Train GPU</div>
+      <div class="timeline-track">
+        <div class="timeline-block idle" style="left:0%; width:19%"></div>
+        <div class="timeline-block train" style="left:19%; width:15%">Train 0</div>
+        <div class="timeline-block idle" style="left:34%; width:4%"></div>
+        <div class="timeline-block train" style="left:38%; width:15%">Train 1</div>
+        <div class="timeline-block idle" style="left:53%; width:4%"></div>
+        <div class="timeline-block train" style="left:57%; width:15%">Train 2</div>
+        <div class="timeline-block idle" style="left:72%; width:4%"></div>
+        <div class="timeline-block train" style="left:76%; width:15%">Train 3</div>
+      </div>
+    </div>
+    <p class="anno">生成完成即流式送入训练，无需等 long-tail → <strong style="color:var(--green)">消除空泡</strong>。代价：训练数据可能来自旧权重 → <strong>staleness</strong></p>
+  </div>
+
+  <div class="callout" style="margin-top:1.2rem">
+    <strong>核心 trade-off</strong>：消除 long-tail 空泡、提高 GPU 利用率 vs. 训练数据与当前策略的偏移（off-policy）。所有 async RL 的设计选择都围绕这个 trade-off 展开。
+  </div>
+</div>
+
+<!-- ==================== SLIDE 3: 4 Dimensions ==================== -->
+<div class="slide" data-slide="2">
+  <h2>分析框架：四个核心维度</h2>
+  <p class="subtitle">按一个 RL step 的生命周期串起来：生成 → 中断处理 → 训练修正 → 权重回传</p>
+
+  <div class="cols cols-2" style="gap:1.2rem; margin-top:1rem">
+    <div class="card" style="border-color: var(--accent);">
+      <h3 style="color: var(--accent)">① Rollout Buffer</h3>
+      <p>生成数据如何暂存？Buffer 深度如何影响 pipeline 效率？</p>
+      <p class="anno" style="margin-top:0.4rem">Double-buffer / Replay Buffer / Bounded Queue</p>
+    </div>
+    <div class="card" style="border-color: var(--accent);">
+      <h3 style="color: var(--accent)">② Partial Rollout</h3>
+      <p>生成被打断时怎么办？丢弃、回收、还是接着续？</p>
+      <p class="anno" style="margin-top:0.4rem">不支持 / Recycle Buffer / Prefix Continuation</p>
+    </div>
+    <div class="card" style="border-color: var(--accent);">
+      <h3 style="color: var(--accent)">③ Staleness 管理</h3>
+      <p>用旧权重生成的数据训练新策略，如何修正 off-policy 偏移？</p>
+      <p class="anno" style="margin-top:0.4rem">TIS / OPSM / ICE-POP / Rejection Sampling / MIS</p>
+    </div>
+    <div class="card" style="border-color: var(--accent);">
+      <h3 style="color: var(--accent)">④ 权重同步协议</h3>
+      <p>训练完成后如何把新权重推送给推理引擎？中断语义是什么？</p>
+      <p class="anno" style="margin-top:0.4rem">Drain / Abort / In-flight 三种策略</p>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:1.2rem">
+    三个框架都要求 <strong>disaggregated 部署</strong>（训练和推理在不同 GPU 上），且都基于 <strong>Ray</strong> 编排。推理引擎分别为 SGLang (SLIME)、vLLM V1 (NeMo-RL)、vLLM/SGLang (verl)。
+  </div>
+</div>
+
+<!-- ==================== SLIDE 4: Framework Positioning ==================== -->
+<div class="slide" data-slide="3">
+  <h2>三框架定位总览</h2>
+
+  <div class="table-wrap" style="margin-bottom:1.2rem">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:130px">维度</th>
+          <th><span class="tag tag-slime">SLIME</span></th>
+          <th><span class="tag tag-nemo">NeMo-RL</span></th>
+          <th><span class="tag tag-verl">verl</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>调度模型</strong></td>
+          <td>主循环 for-loop<br>手动 ray.get 协调</td>
+          <td>主循环 + 后台 Collector<br>ReplayBuffer 解耦</td>
+          <td>独立 Rollouter/Trainer<br>MessageQueue 通信</td>
+        </tr>
+        <tr>
+          <td><strong>推理引擎</strong></td>
+          <td>SGLang</td>
+          <td>vLLM V1 (AsyncLLM)</td>
+          <td>vLLM / SGLang</td>
+        </tr>
+        <tr>
+          <td><strong>设计哲学</strong></td>
+          <td>简洁 + 实用<br>~40行主循环</td>
+          <td>可配置 + 激进<br>In-flight weight update</td>
+          <td>完全解耦 + 通用<br>独立 actor 架构</td>
+        </tr>
+        <tr>
+          <td><strong>代码复杂度</strong></td>
+          <td><span class="badge badge-conservative">低</span></td>
+          <td><span class="badge badge-moderate">中</span></td>
+          <td><span class="badge badge-aggressive">高</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-bottom:0.5rem; color:var(--text-dim)">激进程度谱</h3>
+  <div style="padding:0 2rem">
+    <div class="spectrum">
+      <div class="spectrum-marker m-slime" style="left:20%"></div>
+      <div class="spectrum-marker m-nemo" style="left:70%"></div>
+      <div class="spectrum-marker m-verl" style="left:55%"></div>
+    </div>
+    <div class="spectrum-labels">
+      <span>保守 (on-policy 优先)</span>
+      <span>激进 (throughput 优先)</span>
+    </div>
+    <div style="display:flex; font-size:0.9rem; color:var(--text-dim); margin-top:0.4rem; gap:1rem; justify-content:center">
+      <span><span style="color:var(--slime)">●</span> SLIME</span>
+      <span><span style="color:var(--nemo)">●</span> NeMo-RL</span>
+      <span><span style="color:var(--verl)">●</span> verl</span>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 5: Section - Buffer ==================== -->
+<div class="slide slide-section" data-slide="4">
+  <div class="section-dim">① Rollout Buffer</div>
+  <h2>生成数据如何暂存？</h2>
+  <p class="subtitle">RL step 的起点：推理引擎生成 rollout，数据进入 buffer 等待训练消费</p>
+</div>
+
+<!-- ==================== SLIDE 6: Buffer Comparison ==================== -->
+<div class="slide" data-slide="5">
+  <h2>三种 Buffer 策略</h2>
+
+  <div class="cols cols-3" style="margin-top:0.5rem">
+    <div class="card card-slime">
+      <h3 style="color:var(--slime)">SLIME: Double-Buffer</h3>
+      <div class="metric">
+        <div class="metric-value">1</div>
+        <div class="metric-label">Buffer 深度</div>
+      </div>
+      <ul>
+        <li>主循环亲自调度 rollout</li>
+        <li>最多 1 个 batch in-flight</li>
+        <li>Gen N+1 与 Train N 并行</li>
+        <li>调度逻辑 ~40 行</li>
+      </ul>
+    </div>
+    <div class="card card-nemo">
+      <h3 style="color:var(--nemo)">NeMo-RL: Replay Buffer</h3>
+      <div class="metric">
+        <div class="metric-value">1~N</div>
+        <div class="metric-label">Buffer 深度 (可配)</div>
+      </div>
+      <ul>
+        <li>后台 Collector 持续生成</li>
+        <li>训练从 Buffer 按需取数据</li>
+        <li>Target weight version 匹配</li>
+        <li>Stall 语义：不够就等</li>
+      </ul>
+    </div>
+    <div class="card card-verl">
+      <h3 style="color:var(--verl)">verl: Bounded Queue</h3>
+      <div class="metric">
+        <div class="metric-value">N</div>
+        <div class="metric-label">Queue 深度 (由 staleness 决定)</div>
+      </div>
+      <ul>
+        <li>独立 Rollouter actor streaming</li>
+        <li>逐 sample 粒度推入 queue</li>
+        <li>满了丢老数据，不阻塞 producer</li>
+        <li>双层 backpressure 控制</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:1rem">
+    <strong>关键区别</strong>：SLIME 的 buffer 深度固定为 1（最多 1 步 staleness）；NeMo-RL 通过 <code>max_trajectory_age_steps</code> 配置深度；verl 通过 <code>staleness_threshold</code> 间接控制 queue 容量。
+  </div>
+</div>
+
+<!-- ==================== SLIDE 7: Buffer Timeline ==================== -->
+<div class="slide" data-slide="6">
+  <h2>调度 × Buffer × 权重同步 —— 全景时间线</h2>
+  <p class="subtitle" style="margin-bottom:0.6rem">3 行 × 3 框架：生成 → Buffer（数据流 + 独特约束） → 训练（含 ⚡ 权重同步节点）</p>
+
+  <!-- ===== SLIME ===== -->
+  <div class="timeline-group">
+    <div class="timeline-group-title"><span class="tag tag-slime">SLIME</span> 主循环调度 · Buffer depth=1 · <code>update_weights_interval=2</code></div>
+    <div class="timeline-row">
+      <div class="timeline-label">Gen GPU</div>
+      <div class="timeline-track">
+        <div class="timeline-block gen-slime" style="left:0%; width:16%">Gen 0</div>
+        <div class="timeline-block abort-slime" style="left:16%; width:4%">✂ drain</div>
+        <div class="timeline-block recycle-slime" style="left:20%; width:3%">♻</div>
+        <div class="timeline-block gen-slime" style="left:23%; width:16%">Gen 1</div>
+        <div class="timeline-block abort-slime" style="left:39%; width:4%">✂ drain</div>
+        <div class="timeline-block recycle-slime" style="left:43%; width:3%">♻</div>
+        <div class="timeline-block gen-slime" style="left:46%; width:16%">Gen 2</div>
+        <div class="timeline-block abort-slime" style="left:62%; width:4%">✂ drain</div>
+        <div class="timeline-block recycle-slime" style="left:76%; width:3%">♻</div>
+        <div class="timeline-block gen-slime" style="left:79%; width:16%">Gen 3</div>
+        <div class="timeline-block abort-slime" style="left:95%; width:4%">✂</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Buffer<br><span style="font-size:0.8rem;color:var(--text-dim)">depth=1</span></div>
+      <div class="timeline-track">
+        <div class="timeline-block buf-data slime" style="left:16%; width:4%">D0</div>
+        <div class="timeline-block buf-data slime" style="left:39%; width:4%">D1</div>
+        <div class="timeline-block buf-data slime hold" style="left:62%; width:14%">D2 hold (等 sync)</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Train GPU</div>
+      <div class="timeline-track">
+        <div class="timeline-block train-slime" style="left:20%; width:19%">Train 0</div>
+        <div class="timeline-block train-slime" style="left:43%; width:19%">Train 1</div>
+        <div class="timeline-block sync-mk" style="left:66%; width:10%">⚡ drain+sync</div>
+        <div class="timeline-block train-slime" style="left:79%; width:16%">Train 2</div>
+      </div>
+    </div>
+    <p class="anno">过采样够 batch 后 ✂ abort+drain · D0/D1 立即被下一步 Train 消费（depth=1 几乎不停留） · sync 前必须 drain Gen 2 → D2 被 hold · ♻ partial tokens 回收到下一轮</p>
+  </div>
+
+  <!-- ===== NeMo-RL ===== -->
+  <div class="timeline-group">
+    <div class="timeline-group-title"><span class="tag tag-nemo">NeMo-RL</span> 后台 Collector · Replay Buffer 滑动窗口 · <code>max_trajectory_age_steps=4</code> · 每步 sync</div>
+    <div class="timeline-row">
+      <div class="timeline-label">Collector</div>
+      <div class="timeline-track">
+        <div class="timeline-block gen-nemo" style="left:0%; width:3.5%">v0→t1~4</div>
+        <div class="timeline-block gen-nemo" style="left:34%; width:3%">v1→t5</div>
+        <div class="timeline-block gen-nemo" style="left:53%; width:3%">v2→t6</div>
+        <div class="timeline-block gen-nemo" style="left:68%; width:3%">v3→t7</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Buffer<br><span style="font-size:0.8rem;color:var(--text-dim)">乱序 pool</span></div>
+      <div class="timeline-track">
+        <!-- v0 burst: 24 samples 异步乱序到达, 6th "1" at ~22% → Train 1 starts at 24% -->
+        <!-- Group 1: 前 9 块, 含全部 6 个 "1", 在 Train 1 开始前到达 -->
+        <div class="timeline-block buf-s hl" style="left:4%; width:1.8%">1</div>
+        <div class="timeline-block buf-s hl" style="left:6.2%; width:1.8%">1</div>
+        <div class="timeline-block buf-s" style="left:8.4%; width:1.8%">4</div>
+        <div class="timeline-block buf-s" style="left:10.6%; width:1.8%">2</div>
+        <div class="timeline-block buf-s hl" style="left:12.8%; width:1.8%">1</div>
+        <div class="timeline-block buf-s hl" style="left:15%; width:1.8%">1</div>
+        <div class="timeline-block buf-s" style="left:17.2%; width:1.8%">3</div>
+        <div class="timeline-block buf-s hl" style="left:19.4%; width:1.8%">1</div>
+        <div class="timeline-block buf-s hl" style="left:21.6%; width:1.8%">1</div>
+        <!-- ↑ 6th "1" at 21.6% → Train 1 starts at 24%! 以下 v0 块在 Train 1 期间仍在到达 ↓ -->
+        <div class="timeline-block buf-s" style="left:24%; width:1.8%">4</div>
+        <div class="timeline-block buf-s" style="left:26.2%; width:1.8%">3</div>
+        <div class="timeline-block buf-s" style="left:28.4%; width:1.8%">2</div>
+        <div class="timeline-block buf-s" style="left:30.6%; width:1.8%">2</div>
+        <div class="timeline-block buf-s" style="left:32.8%; width:1.8%">3</div>
+        <div class="timeline-block buf-s" style="left:35%; width:1.8%">4</div>
+        <div class="timeline-block buf-s" style="left:37.2%; width:1.8%">2</div>
+        <div class="timeline-block buf-s" style="left:39.4%; width:1.8%">2</div>
+        <div class="timeline-block buf-s" style="left:41.6%; width:1.8%">2</div>
+        <!-- v0 尾部 + v1→t5 早期 sample 混合到达 -->
+        <div class="timeline-block buf-s" style="left:44.5%; width:1.8%">5</div>
+        <div class="timeline-block buf-s" style="left:46.7%; width:1.8%">4</div>
+        <div class="timeline-block buf-s" style="left:48.9%; width:1.8%">3</div>
+        <div class="timeline-block buf-s" style="left:51.1%; width:1.8%">3</div>
+        <div class="timeline-block buf-s" style="left:53.3%; width:1.8%">5</div>
+        <div class="timeline-block buf-s" style="left:55.5%; width:1.8%">3</div>
+        <!-- v1→t5 supplement -->
+        <div class="timeline-block buf-s" style="left:58%; width:1.8%">5</div>
+        <div class="timeline-block buf-s" style="left:60.2%; width:1.8%">5</div>
+        <div class="timeline-block buf-s" style="left:62.4%; width:1.8%">4</div>
+        <div class="timeline-block buf-s" style="left:64.6%; width:1.8%">6</div>
+        <div class="timeline-block buf-s" style="left:66.8%; width:1.8%">5</div>
+        <div class="timeline-block buf-s" style="left:69%; width:1.8%">6</div>
+        <!-- v2→t6 / v3→t7 supplement -->
+        <div class="timeline-block buf-s" style="left:72%; width:1.8%">7</div>
+        <div class="timeline-block buf-s" style="left:74.2%; width:1.8%">7</div>
+        <div class="timeline-block buf-s" style="left:76.4%; width:1.8%">4</div>
+        <div class="timeline-block buf-s" style="left:78.6%; width:1.8%">6</div>
+        <div class="timeline-block buf-s" style="left:80.8%; width:1.8%">6</div>
+        <div class="timeline-block buf-s" style="left:83%; width:1.8%">6</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Train GPU</div>
+      <div class="timeline-track">
+        <!-- Train 1 starts at 24% right after 6th "1" (21.6%), v0 tail still arriving -->
+        <div class="timeline-block train-nemo" style="left:24%; width:8%">Train 1 ← t=1</div>
+        <div class="timeline-block sync-mk" style="left:32%; width:2%">⚡</div>
+        <div class="timeline-block train-nemo" style="left:43%; width:8%">Train 2 ← t=2</div>
+        <div class="timeline-block sync-mk" style="left:51%; width:2%">⚡</div>
+        <div class="timeline-block train-nemo" style="left:58%; width:8%">Train 3 ← t=3</div>
+        <div class="timeline-block sync-mk" style="left:66%; width:2%">⚡</div>
+      </div>
+    </div>
+    <p class="anno">v0 dispatch 后 24 个 sample 异步乱序到达 · 6th 高亮"1"凑够 → Train 1 立即开始（此时 t=2,3,4 仍在陆续入 pool）· 每步 sync 后补 1 batch 新 target</p>
+  </div>
+
+  <!-- ===== verl ===== -->
+  <div class="timeline-group" style="border-bottom:none; padding-bottom:0">
+    <div class="timeline-group-title"><span class="tag tag-verl">verl</span> 独立 Rollouter/Trainer actor · Bounded Queue (maxlen=16) · <code>required_samples=4</code> · <code>staleness_threshold=1</code> · <code>trigger_parameter_sync_step=2</code></div>
+    <div class="timeline-row">
+      <div class="timeline-label">Rollouter<br><span style="font-size:0.8rem;color:var(--text-dim)">task start</span></div>
+      <div class="timeline-track">
+        <div class="timeline-block gen-verl" style="left:0%; width:1.8%; font-size:0.8rem">1</div>
+        <div class="timeline-block gen-verl" style="left:2.2%; width:1.8%; font-size:0.8rem">2</div>
+        <div class="timeline-block gen-verl" style="left:4.4%; width:1.8%; font-size:0.8rem">3</div>
+        <div class="timeline-block gen-verl" style="left:6.6%; width:1.8%; font-size:0.8rem">4</div>
+        <div class="timeline-block gen-verl" style="left:8.8%; width:1.8%; font-size:0.8rem">5</div>
+        <div class="timeline-block gen-verl" style="left:11%; width:1.8%; font-size:0.8rem">6</div>
+        <div class="timeline-block gen-verl" style="left:13.2%; width:1.8%; font-size:0.8rem">7</div>
+        <div class="timeline-block gen-verl" style="left:15.4%; width:1.8%; font-size:0.8rem">8</div>
+        <div class="timeline-block gen-verl" style="left:17.6%; width:1.8%; font-size:0.8rem">9</div>
+        <div class="timeline-block gen-verl" style="left:19.8%; width:1.8%; font-size:0.8rem">10</div>
+        <div class="timeline-block gen-verl" style="left:22%; width:1.8%; font-size:0.8rem">11</div>
+        <div class="timeline-block gen-verl" style="left:24.2%; width:1.8%; font-size:0.8rem">12</div>
+        <div class="timeline-block gen-verl" style="left:26.4%; width:1.8%; font-size:0.8rem">13</div>
+        <div class="timeline-block gen-verl" style="left:28.6%; width:1.8%; font-size:0.8rem">14</div>
+        <div class="timeline-block gen-verl" style="left:30.8%; width:1.8%; font-size:0.8rem">15</div>
+        <div class="timeline-block gen-verl" style="left:33%; width:1.8%; font-size:0.8rem">16</div>
+        <!-- gap: staleness backpressure → abort + sync -->
+        <div class="timeline-block gen-verl" style="left:62%; width:1.8%; font-size:0.8rem">17</div>
+        <div class="timeline-block gen-verl" style="left:64.2%; width:1.8%; font-size:0.8rem">18</div>
+        <div class="timeline-block gen-verl" style="left:66.4%; width:1.8%; font-size:0.8rem">19</div>
+        <div class="timeline-block gen-verl" style="left:68.6%; width:1.8%; font-size:0.8rem">20</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Queue<br><span style="font-size:0.8rem;color:var(--text-dim)">完成入队 · maxlen=16</span></div>
+      <div class="timeline-track">
+        <!-- Phase 1: 凑够 required_samples=4，立即启动 Train 0 -->
+        <div class="timeline-block buf-s verl hl" style="left:4%; width:1.8%">1</div>
+        <div class="timeline-block buf-s verl hl" style="left:6.2%; width:1.8%">2</div>
+        <div class="timeline-block buf-s verl hl" style="left:8.4%; width:1.8%">3</div>
+        <div class="timeline-block buf-s verl hl" style="left:10.6%; width:1.8%">4</div>
+        <!-- Phase 2: Train 0 期间继续完成入队，形成下一批 -->
+        <div class="timeline-block buf-s verl hl" style="left:15%; width:1.8%">5</div>
+        <div class="timeline-block buf-s verl hl" style="left:17.2%; width:1.8%">6</div>
+        <div class="timeline-block buf-s verl hl" style="left:19.4%; width:1.8%">7</div>
+        <div class="timeline-block buf-s verl hl" style="left:21.6%; width:1.8%">8</div>
+        <!-- Phase 3: Train 1 期间继续堆积；这个示例先撞 staleness 上限，不展示 FIFO 淘汰 -->
+        <div class="timeline-block buf-s verl hl" style="left:28%; width:1.8%">9</div>
+        <div class="timeline-block buf-s verl hl" style="left:30.2%; width:1.8%">10</div>
+        <div class="timeline-block buf-s verl hl" style="left:32.4%; width:1.8%">11</div>
+        <div class="timeline-block buf-s verl hl" style="left:34.6%; width:1.8%">12</div>
+        <div class="timeline-block buf-s verl" style="left:36.8%; width:1.8%">13</div>
+        <div class="timeline-block buf-s verl" style="left:39%; width:1.8%">14</div>
+        <div class="timeline-block buf-s verl" style="left:41.2%; width:1.8%">15</div>
+        <div class="timeline-block buf-s verl" style="left:43.4%; width:1.8%">16</div>
+        <!-- Phase 4: sync 后恢复；旧 queue 残留保留，再补新 sample -->
+        <div class="timeline-block buf-s verl" style="left:66%; width:1.8%">17</div>
+        <div class="timeline-block buf-s verl" style="left:68.2%; width:1.8%">18</div>
+        <div class="timeline-block buf-s verl" style="left:70.4%; width:1.8%">19</div>
+        <div class="timeline-block buf-s verl" style="left:72.6%; width:1.8%">20</div>
+      </div>
+    </div>
+    <div class="timeline-row">
+      <div class="timeline-label">Trainer</div>
+      <div class="timeline-track">
+        <div class="timeline-block train-verl" style="left:12%; width:13%">Train 0</div>
+        <div class="timeline-block train-verl" style="left:26%; width:18%">Train 1</div>
+        <div class="timeline-block sync-mk" style="left:46%; width:16%">⚡ abort+sync</div>
+        <div class="timeline-block train-verl" style="left:62%; width:13%">Train 2</div>
+      </div>
+    </div>
+    <p class="anno">上行 = rollout task 发起时刻；下行 = sample 完成后真正进入 queue 的时刻，所以 queue 会整体滞后于 Rollouter · 这个例子取 <code>required_samples=4</code>，因此第一个训练步先消费 1-4，再启动 Train 0 · 我把 Train 时间块拉长，用来展示 “训练时 rollout 继续完成入队” 的真实重叠 · 这里先触发的是 <strong>staleness cap</strong>（而不是 queue 物理满），所以这版不再画 FIFO 淘汰 · <strong>sync 不清空 queue</strong>，因此 Train 2 会先消费 sync 前残留的 9-12，再由 Rollouter 继续补 17-20</p>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 8: Section - Partial Rollout ==================== -->
+<div class="slide slide-section" data-slide="7">
+  <div class="section-dim">② Partial Rollout</div>
+  <h2>生成被打断怎么办？</h2>
+  <p class="subtitle">Rollout 进行中遇到权重同步或过采样完成 → 还在飞的请求何去何从？</p>
+</div>
+
+<!-- ==================== SLIDE 9: Partial Rollout ==================== -->
+<div class="slide" data-slide="8">
+  <h2>Partial Rollout：三种策略</h2>
+
+  <div class="cols cols-3" style="margin-top:0.5rem">
+    <div class="card card-nemo">
+      <h3 style="color:var(--nemo)">NeMo-RL: 不支持</h3>
+      <ul style="margin-top:0.6rem">
+        <li>所有 sample 必须完整运行</li>
+        <li>没有 abort / recycle 机制</li>
+        <li>In-flight 模式不中止正在生成的请求</li>
+      </ul>
+    </div>
+
+    <div class="card card-slime">
+      <h3 style="color:var(--slime)">SLIME: Abort + Recycle</h3>
+      <ul style="margin-top:0.6rem">
+        <li>凑够train batch就 abort 剩余请求</li>
+        <li>被 aborted 请求的已生成 token 放入回收 buffer</li>
+        <li>下次优先从 buffer 取 partial sample</li>
+        <li>旧 token 的 <code>loss_mask=0</code></li>
+      </ul>
+      <div class="callout" style="margin-top:0.8rem; font-size:0.95rem">
+        <strong>优势</strong>：不浪费已完成的工作 + 可利用 prefix cache
+      </div>
+    </div>
+
+    <div class="card card-verl">
+      <h3 style="color:var(--verl)">verl: Abort + Prefix Continue</h3>
+      <ul style="margin-top:0.6rem">
+        <li>Hard abort engines后，每个被 abort 的 request 循环重试</li>
+        <li>输入prompt += 已生成 tokens，继续生成</li>
+        <li>对上层调用者完全透明，感知不到被 abort 过</li>
+      </ul>
+      <div class="callout" style="margin-top:0.8rem; font-size:0.95rem">
+        <strong>代价</strong>：KV cache 被清空，无法利用 prefix cache
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top:1.2rem;">
+    <h3 style="color:var(--text-dim); margin-bottom:0.5rem;">时序对比：生成被打断时</h3>
+    <div class="cols cols-3">
+      <div style="font-size:0.95rem; line-height:1.6;">
+        <strong style="color:var(--nemo)">NeMo-RL</strong><br>
+        <code style="font-size:0.9rem">t1 t2 t3 ... tN</code> → 完整完成<br>
+        推入 buffer，不中断
+      </div>
+      <div style="font-size:0.95rem; line-height:1.6;">
+        <strong style="color:var(--slime)">SLIME</strong><br>
+        <code style="font-size:0.9rem">t1 t2 t3</code> → abort → 回收 buffer<br>
+        下次取出：<code style="font-size:0.9rem"><s>t1 t2 t3</s> t4 t5 ... tN</code><br>
+        mask: <code style="font-size:0.9rem">[0,0,0,1,1,...,1]</code>
+      </div>
+      <div style="font-size:0.95rem; line-height:1.6;">
+        <strong style="color:var(--verl)">verl</strong><br>
+        <code style="font-size:0.9rem">t1 t2 t3</code> → abort → 权重更新<br>
+        重提交：<code style="font-size:0.9rem">prompt+[t1,t2,t3]</code> → <code style="font-size:0.9rem">t4 ... tN</code><br>
+        记录跨版本信息(目前只用于统计)global_steps: <code style="font-size:0.9rem">[V1, V2]</code>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 10: Section - Staleness ==================== -->
+<div class="slide slide-section" data-slide="9">
+  <div class="section-dim">③ Staleness 管理</div>
+  <h2>Staleness 管理分两层</h2>
+  <p class="subtitle">第一层先看哪些样本会进入训练；第二层再看这些样本进入 trainer 之后，loss 怎么修</p>
+
+  <div class="flow" style="margin-top:1.2rem; justify-content:center">
+    <div class="flow-step">Rollout 数据到达 Buffer / Queue</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step highlight">Step 1: 样本 filtering / selection</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step highlight">Step 2: Loss correction</div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-step">最终参与反传</div>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 11: Staleness Strategies ==================== -->
+<div class="slide" data-slide="10">
+  <h2>第一层：哪些样本进入训练？</h2>
+  <p class="subtitle">先看上游 filtering / selection。不同框架首先分歧在这里，而不是 TIS / OPSM / ICE-POP 本身。</p>
+
+  <div class="cols cols-3" style="gap:1rem">
+    <div class="card card-slime">
+      <h3 style="color:var(--slime)">SLIME</h3>
+      <div class="flow">
+        <div class="flow-step">Double-buffer</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step hl-slime">depth=1</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step">batch 进 trainer</div>
+      </div>
+      <div class="key-point slime">
+        <strong>默认主路径不是先筛样本。</strong><br>
+        关键是用 <code>depth=1</code> 把 lag 压到最多 1 个 rollout step，再把整批数据送进 trainer。
+      </div>
+    </div>
+
+    <div class="card card-nemo">
+      <h3 style="color:var(--nemo)">NeMo-RL</h3>
+      <div class="flow">
+        <div class="flow-step hl-nemo">target match</div>
+        <span class="flow-arrow">+</span>
+        <div class="flow-step hl-nemo">age window</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step">不足就 stall</div>
+      </div>
+      <div class="key-point nemo">
+        <strong>默认主路径先筛样本。</strong><br>
+        只有 <code>target version</code> 匹配且年龄没超窗的 trajectory 才能进入当前训练步；不够就等。
+      </div>
+    </div>
+
+    <div class="card card-verl">
+      <h3 style="color:var(--verl)">verl</h3>
+      <div class="flow">
+        <div class="flow-step">FIFO queue</div>
+        <span class="flow-arrow">+</span>
+        <div class="flow-step hl-verl">staleness threshold</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step">trainer 取样</div>
+      </div>
+      <div class="key-point verl">
+        <strong>默认主路径先做深度约束。</strong><br>
+        <code>staleness threshold</code> 用来限制 rollouter 还能继续积压多少 stale samples；trainer 再按 queue 顺序取样。
+      </div>
+    </div>
+  </div>
+
+  <div class="callout" style="margin-top:1rem">
+    <strong>这一步的核心差异</strong>：SLIME 先把 lag 压小，NeMo-RL 先按版本筛样本，verl 先从系统深度上限制 stale backlog。
+  </div>
+</div>
+
+<!-- ==================== SLIDE 12: Staleness Details ==================== -->
+<div class="slide" data-slide="11">
+  <h2>第二层：样本进来后，loss 怎么修？</h2>
+  <p class="subtitle">这时才比较 TIS / OPSM / mask-IS / seq-mask-TIS。它们解决的是“样本已经进 trainer 之后”的 off-policy 偏移。</p>
+
+  <div class="cols cols-2" style="gap:1.5rem; margin-top:0.5rem">
+    <div>
+      <h3>Token-level 修正</h3>
+      <div class="table-wrap" style="margin-top:0.5rem">
+        <table>
+          <thead><tr><th>策略</th><th>公式</th><th>框架</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>TIS</strong></td>
+              <td>clamp(π<sub>θ</sub>/π<sub>old</sub>, max=T)</td>
+              <td>
+                <span class="tag tag-slime" style="font-size:0.82rem">SLIME</span>
+                <span class="tag tag-nemo" style="font-size:0.82rem">NeMo-RL</span>
+                <span class="tag tag-verl" style="font-size:0.82rem">verl</span>
+              </td>
+            </tr>
+            <tr>
+              <td><strong>Mask-IS / Rejection</strong></td>
+              <td>ratio 超限 → 置零或 mask</td>
+              <td>
+                <span class="tag tag-nemo" style="font-size:0.82rem">NeMo-RL</span>
+                <span class="tag tag-verl" style="font-size:0.82rem">verl</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top:1.2rem">Sequence-level 修正</h3>
+      <div class="table-wrap" style="margin-top:0.5rem">
+        <table>
+          <thead><tr><th>策略</th><th>Seq metric</th><th>触发条件</th><th>框架</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>OPSM</strong></td>
+              <td><code>seq_kl = mean(log π_old - log π_cur)</code></td>
+              <td><code>adv &lt; 0</code> 且 <code>seq_kl &gt; δ</code> → mask</td>
+              <td><span class="tag tag-slime" style="font-size:0.82rem">SLIME</span></td>
+            </tr>
+            <tr>
+              <td><strong>seq-mask-TIS</strong></td>
+              <td><code>geo-mean IS = exp(mean(log π_old - log π_rollout))</code></td>
+              <td><code>geo-mean IS</code> 不在 <code>[min,max]</code> → mask</td>
+              <td><span class="tag tag-nemo" style="font-size:0.82rem">NeMo-RL</span></td>
+            </tr>
+            <tr>
+              <td><strong>Rejection</strong></td>
+              <td><code>seq_sum/mean/max</code> of <code>k1/k2/k3(log-ratio)</code></td>
+              <td>sequence divergence statistic 超阈值 → mask</td>
+              <td><span class="tag tag-verl" style="font-size:0.82rem">verl</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout" style="margin-top:0.8rem">
+        <strong>三者的关联</strong>：它们都从 token-level 的 <code>log-prob difference / log-ratio</code> 出发，先聚合成一个 sequence scalar 再决定是否 mask。<br>
+        SLIME 保留在 log-space；NeMo-RL 对同类量再取 <code>exp</code>，变成几何均值 IS ratio；verl 则把 <code>log-ratio</code> 变成 <code>k1/k2/k3</code> 这类 divergence statistic 再做 rejection。
+      </div>
+    </div>
+
+    <div>
+      <h3>执行流程对比</h3>
+      <div class="card card-slime" style="margin-bottom:0.6rem">
+        <h3 style="color:var(--slime); font-size:1.05rem">SLIME: 两层串行修正</h3>
+        <div class="flow">
+          <div class="flow-step">PPO loss</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step hl-slime">OPSM mask</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step hl-slime">TIS 加权</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step">最终 loss</div>
+        </div>
+        <p class="anno">先序列级过滤，再 token 级加权。两者解耦可独立开关</p>
+      </div>
+
+      <div class="card card-nemo" style="margin-bottom:0.6rem">
+        <h3 style="color:var(--nemo); font-size:1.05rem">NeMo-RL: 三选一 IS 修正</h3>
+        <div class="flow">
+          <div class="flow-step">logprob error mask (可选)</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step">PPO loss</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step hl-nemo">TIS / Mask-IS / seq-mask-TIS</div>
+        </div>
+        <p class="anno">`truncated_importance_sampling_type` 只会走一个分支：TIS、ICE-POP 式 mask-IS、或 seq-mask-TIS；另有可选 logprob error masking</p>
+      </div>
+
+      <div class="card card-verl">
+        <h3 style="color:var(--verl); font-size:1.05rem">verl: TIS + Rejection + MIS</h3>
+        <div class="flow">
+          <div class="flow-step">PPO loss</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step hl-verl">TIS 加权</div>
+          <span class="flow-arrow">→</span>
+          <div class="flow-step hl-verl">Rejection mask</div>
+        </div>
+        <p class="anno">rollout correction = IS weights + rejection sampling；还支持 MIS 多版本权重切换</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 13: Section - Weight Sync ==================== -->
+<div class="slide slide-section" data-slide="12">
+  <div class="section-dim">④ 权重同步协议</div>
+  <h2>新权重如何推送回推理引擎？</h2>
+  <p class="subtitle">训练完成 → 新权重需要同步到推理 GPU → 这是一个 RL step 的最后一环</p>
+</div>
+
+<!-- ==================== SLIDE 14: Weight Sync Flow ==================== -->
+<div class="slide" data-slide="13">
+  <h2>权重同步：三种中断策略</h2>
+
+  <div class="cols cols-3" style="margin-top:0.5rem;">
+
+    <div class="card card-slime">
+      <h3 style="color:var(--slime)">SLIME: Drain → Sync</h3>
+      <div class="flow" style="flex-direction:column; align-items:stretch;">
+        <div class="flow-step">① 外层调度先 drain in-flight rollout</div>
+        <div class="flow-step hl-slime">② pause_generation</div>
+        <div class="flow-step hl-slime">③ flush KV cache</div>
+        <div class="flow-step">④ TP all-gather</div>
+        <div class="flow-step">⑤ Megatron → HF 转换</div>
+        <div class="flow-step hl-slime">⑥ Bucketed NCCL broadcast</div>
+        <div class="flow-step hl-slime">⑦ continue_generation</div>
+      </div>
+      <p class="anno" style="margin-top:0.5rem">需要 HF 格式转换 + 锁协调</p>
+    </div>
+
+    <div class="card card-nemo">
+      <h3 style="color:var(--nemo)">NeMo-RL: Pause → Sync</h3>
+      <div class="flow" style="flex-direction:column; align-items:stretch;">
+        <div class="flow-step hl-nemo">① 暂停新生成</div>
+        <div class="flow-step">② (Blocking) 等 pending 完成<br>&nbsp;&nbsp;&nbsp;(In-flight) 跳过等待</div>
+        <div class="flow-step hl-nemo">③ NCCL collective broadcast<br>&nbsp;&nbsp;&nbsp;via vLLM collective_rpc</div>
+        <div class="flow-step hl-nemo">④ (可选) invalidate KV cache</div>
+        <div class="flow-step hl-nemo">⑤ version++ + resume generation</div>
+      </div>
+      <p class="anno" style="margin-top:0.5rem">无需格式转换，vLLM 直接接收</p>
+    </div>
+
+    <div class="card card-verl">
+      <h3 style="color:var(--verl)">verl: Abort → Sync</h3>
+      <div class="flow" style="flex-direction:column; align-items:stretch;">
+        <div class="flow-step hl-verl">① Hard abort 所有请求</div>
+        <div class="flow-step hl-verl">② Sleep replicas (释放 KV)</div>
+        <div class="flow-step">③ 建立 NCCL 通信组</div>
+        <div class="flow-step hl-verl">④ Bucketed NCCL broadcast</div>
+        <div class="flow-step">⑤ 销毁通信组</div>
+        <div class="flow-step hl-verl">⑥ Wake replicas (恢复引擎 / 重新占用 KV 显存)</div>
+        <div class="flow-step hl-verl">⑦ Resume generation</div>
+      </div>
+      <p class="anno" style="margin-top:0.5rem">显存借用：sleep 腾 KV 空间放 buffer</p>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 15: Weight Sync Details ==================== -->
+<div class="slide" data-slide="14">
+  <h2>权重同步：关键设计差异</h2>
+
+  <div class="table-wrap" style="margin-bottom:1.2rem">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:150px">方面</th>
+          <th><span class="tag tag-slime">SLIME</span></th>
+          <th><span class="tag tag-nemo">NeMo-RL</span></th>
+          <th><span class="tag tag-verl">verl</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>中断语义</strong></td>
+          <td>Drain (等自然完成)</td>
+          <td>Pause (可选 drain/skip)</td>
+          <td>Hard abort (立即终止)</td>
+        </tr>
+        <tr>
+          <td><strong>In-flight 更新</strong></td>
+          <td style="color:var(--red)">不支持</td>
+          <td style="color:var(--green)">支持 ✓</td>
+          <td style="color:var(--red)">不支持</td>
+        </tr>
+        <tr>
+          <td><strong>传输方式</strong></td>
+          <td>Bucketed NCCL + Lock</td>
+          <td>vLLM collective_rpc</td>
+          <td>Bucketed NCCL / CUDA IPC</td>
+        </tr>
+        <tr>
+          <td><strong>KV cache</strong></td>
+          <td>Flush before sync</td>
+          <td>可选 invalidate (AREAL) 或保留 (Magistral)</td>
+          <td>Sleep 释放 → Wake 恢复</td>
+        </tr>
+        <tr>
+          <td><strong>触发频率</strong></td>
+          <td><code>update_weights_interval</code></td>
+          <td>每个训练步</td>
+          <td><code>trigger_parameter_sync_step</code></td>
+        </tr>
+        <tr>
+          <td><strong>MoE Expert</strong></td>
+          <td>额外 EP gather + broadcast</td>
+          <td>无特殊处理</td>
+          <td>无特殊处理</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <strong>NeMo-RL 的 In-flight Weight Update</strong> 是独有的激进特性：权重同步时不等待正在进行的生成完成，允许部分 token 用旧权重、部分用新权重生成。这依赖 vLLM V1 的 <code>collective_rpc</code> 能力。可选配合 KV cache invalidation 来缓解不一致。
+  </div>
+</div>
+
+<!-- ==================== SLIDE 16: Summary Table ==================== -->
+<div class="slide" data-slide="15">
+  <h2>总结对比</h2>
+
+  <div class="table-wrap">
+    <table style="font-size:0.95rem">
+      <thead>
+        <tr>
+          <th style="width:135px">维度</th>
+          <th style="color:var(--slime)">SLIME</th>
+          <th style="color:var(--nemo)">NeMo-RL</th>
+          <th style="color:var(--verl)">verl</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>① Buffer</strong></td>
+          <td>Double-buffer (深度=1)</td>
+          <td>Replay Buffer (深度可配 1~N)</td>
+          <td>Bounded Queue (staleness 驱动)</td>
+        </tr>
+        <tr>
+          <td><strong>② Partial Rollout</strong></td>
+          <td>Abort + recycle buffer<br>+ off-policy token mask</td>
+          <td style="color:var(--text-dim)">不支持</td>
+          <td>Abort + prefix continuation<br>+ global_steps 追踪</td>
+        </tr>
+        <tr>
+          <td><strong>③ Staleness 修正</strong></td>
+          <td>TIS + OPSM</td>
+          <td>TIS / ICE-POP / seq-mask-TIS<br>+ logprob error masking</td>
+          <td>TIS + Rejection Sampling<br>+ MIS (多版本)</td>
+        </tr>
+        <tr>
+          <td><strong>④ 权重同步</strong></td>
+          <td>Drain → pause → flush →<br>bucketed NCCL broadcast</td>
+          <td>Pause → NCCL collective<br>via vLLM collective_rpc</td>
+          <td>Hard abort → sleep →<br>bucketed NCCL / CUDA IPC</td>
+        </tr>
+        <tr>
+          <td><strong>In-flight 更新</strong></td>
+          <td style="color:var(--red)">✗</td>
+          <td style="color:var(--green)">✓ (独有)</td>
+          <td style="color:var(--red)">✗</td>
+        </tr>
+        <tr>
+          <td><strong>调度模型</strong></td>
+          <td>主循环 for-loop 手动调度</td>
+          <td>主循环 + 后台 Collector<br>Replay Buffer 解耦</td>
+          <td>独立 Rollouter / Trainer actor<br>MessageQueue 通信</td>
+        </tr>
+        <tr>
+          <td><strong>推理引擎</strong></td>
+          <td>SGLang</td>
+          <td>vLLM V1 (AsyncLLM)</td>
+          <td>vLLM / SGLang</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ==================== SLIDE 17: Takeaways ==================== -->
+<div class="slide" data-slide="16">
+  <h2>Key Takeaways</h2>
+
+  <div style="max-width:800px">
+    <div class="card" style="margin-bottom:1rem; border-color: var(--accent);">
+      <h3>1. 三种设计哲学，一个核心 trade-off</h3>
+      <p>SLIME 选择<strong>简洁</strong>（double-buffer + 40行主循环）；NeMo-RL 选择<strong>激进</strong>（in-flight weight update + 深 replay buffer）；verl 选择<strong>通用</strong>（完全解耦的独立 actor 架构）。但本质上都在平衡 <strong>GPU 利用率 vs. off-policy 偏移</strong>。</p>
+    </div>
+
+    <div class="card" style="margin-bottom:1rem; border-color: var(--accent);">
+      <h3>2. Buffer 深度是关键 knob</h3>
+      <p>SLIME 固定为 1 步（最安全）；NeMo-RL 和 verl 允许多步（更高 throughput）。NeMo-RL 的官方配置已有 <code>max_trajectory_age_steps=8</code> 的实例，配合 MoE 24 节点场景。<strong>Buffer 越深，版本 filtering / staleness handling 就越关键，而不只是 loss 层 correction。</strong></p>
+    </div>
+
+    <div class="card" style="margin-bottom:1rem; border-color: var(--accent);">
+      <h3>3. Staleness 修正没有银弹</h3>
+      <p>三框架都用了 IS correction，但真正的差异在于 <strong>loss 前是否还有 filtering / selection</strong>：SLIME 默认主路径以 <code>depth=1</code> 约束 lag，再做 TIS/OPSM；NeMo-RL 用 <code>target-match + age-window</code> 决定哪些样本能进当前步，再做 IS；verl 则把 queue threshold、rejection 和 MIS 组合得更系统。<strong>哪种更好取决于 staleness 程度和系统复杂度预算。</strong></p>
+    </div>
+
+    <div class="card" style="border-color: var(--accent);">
+      <h3>4. 权重同步是最大的工程瓶颈</h3>
+      <p>三框架在权重同步上的差异最大：SLIME 需要格式转换 + 锁协调；NeMo-RL 利用 vLLM 的 collective_rpc 最简洁；verl 的 sleep/wake 显存借用最灵活。中断策略（drain/pause/abort）直接决定 partial rollout 的处理方式。</p>
+    </div>
+  </div>
+</div>
+
+</div><!-- /deck -->
+
+<!-- ============ Progress & Nav ============ -->
+<div class="progress" id="progress"></div>
+<div class="slide-number" id="slideNumber"></div>
+<div class="nav-hint">← →  /  Space  /  Click</div>
+
+<script>
+(function() {
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  let current = 0;
+
+  function goTo(n) {
+    if (n < 0 || n >= total) return;
+    slides[current].classList.remove('active');
+    current = n;
+    slides[current].classList.add('active');
+    updateUI();
+  }
+
+  function next() { goTo(current + 1); }
+  function prev() { goTo(current - 1); }
+
+  function updateUI() {
+    document.getElementById('progress').style.width =
+      ((current + 1) / total * 100) + '%';
+    document.getElementById('slideNumber').textContent =
+      (current + 1) + ' / ' + total;
+  }
+
+  // Keyboard
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'ArrowDown' || e.key === 'PageDown') {
+      e.preventDefault(); next();
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+      e.preventDefault(); prev();
+    }
+    if (e.key === 'Home') { e.preventDefault(); goTo(0); }
+    if (e.key === 'End')  { e.preventDefault(); goTo(total - 1); }
+  });
+
+  // Click left/right halves
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('a, button, input, select')) return;
+    if (e.clientX > window.innerWidth / 2) next(); else prev();
+  });
+
+  // Touch swipe
+  let touchStartX = 0;
+  document.addEventListener('touchstart', function(e) { touchStartX = e.touches[0].clientX; });
+  document.addEventListener('touchend', function(e) {
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    if (Math.abs(dx) > 50) { dx < 0 ? next() : prev(); }
+  });
+
+  // Hash navigation
+  function readHash() {
+    const m = location.hash.match(/^#(\d+)$/);
+    if (m) goTo(parseInt(m[1]) - 1);
+  }
+  window.addEventListener('hashchange', readHash);
+  readHash();
+
+  updateUI();
+})();
+</script>
+</body>
+</html>
