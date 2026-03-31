@@ -1,5 +1,7 @@
 # RL Infra Notes
 
+[English](README_EN.md) | 中文
+
 > Deep source-code walkthroughs of LLM RL training infrastructure — async RL scheduling, weight synchronization, FP8 mixed-precision, MoE routing precision, and more.
 
 LLM 强化学习训练基础设施的**源码级**深度分析笔记。不止于"是什么"，更关注"为什么这样设计"和"代码里实际怎么做的"。
@@ -19,13 +21,13 @@ LLM 强化学习训练基础设施的**源码级**深度分析笔记。不止于
 
 ### Async RL Training
 
-对比分析 SLIME 和 veRL 两个框架在异步 RL 训练中的设计选择，覆盖 [HuggingFace Async RL Survey](https://huggingface.co/blog/async-rl-training-landscape) 的 4 个核心维度：Rollout Buffer、权重同步、Staleness 管理、Partial Rollout。
+对比分析三个框架在异步 RL 训练中的设计选择，覆盖 [HuggingFace Async RL Survey](https://huggingface.co/blog/async-rl-training-landscape) 的 4 个核心维度：Rollout Buffer、权重同步、Staleness 管理、Partial Rollout。
 
 | Note | Framework | Highlights |
 |------|-----------|------------|
 | [SLIME Async RL Walkthrough](docs/async-rl/slime-async-rl-walkthrough.md) | [THUDM/slime](https://github.com/THUDM/slime) | Double-buffer 调度、TIS + OPSM staleness 修正、abort + recycle 机制 |
 | [veRL Async RL Walkthrough](docs/async-rl/verl-async-rl-walkthrough.md) | [volcengine/verl](https://github.com/volcengine/verl) | Bounded queue + backpressure、NCCL bucketed broadcast、MIS 多版本 IS、prefix continuation |
-
+| [NeMo-RL Async RL Walkthrough](docs/async-rl/nemo-rl-async-rl-walkthrough.md) | [NVIDIA/NeMo-RL](https://github.com/NVIDIA/NeMo-RL) | Replay Buffer + target weight matching、in-flight weight update、TIS / ICE-POP / seq-mask-TIS |
 ### FP8 Mixed-Precision Training & Inference
 
 FP8 训练和推理中的量化范围、scale 格式、通信精度等细节分析。
@@ -37,11 +39,15 @@ FP8 训练和推理中的量化范围、scale 格式、通信精度等细节分�
 | [FP8 Blockwise Scale 分析](docs/fp8/fp8_blockwise_scale_analysis.md) | vLLM | DeepGEMM UE8M0 vs FP32 scale、kernel dispatch 优先级 |
 | [MoE Router Dtype 分析](docs/fp8/megatron_moe_router_dtype_analysis.md) | Megatron-LM + vLLM | Router 全链路 dtype 追踪（训练 vs 推理）、bf16 topk 精度风险 |
 
+### 🌐 English Translations
+
+所有笔记的英文翻译版本位于 [`docs-en/`](docs-en/) 目录，结构与 `docs/` 完全平行。
+
 ## Frameworks Studied
 
 | Framework | Focus |
 |-----------|-------|
-| [NVIDIA NeMo RL](https://github.com/NVIDIA-NeMo/RL) | RL training pipeline |
+| [NVIDIA NeMo-RL](https://github.com/NVIDIA/NeMo-RL) | RL training pipeline, async GRPO |
 | [veRL](https://github.com/volcengine/verl) | Async RL, weight sync |
 | [SLIME](https://github.com/THUDM/slime) | Async RL, TIS/OPSM |
 | [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) | Distributed training, FP8, MoE |
