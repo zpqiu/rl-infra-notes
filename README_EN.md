@@ -19,7 +19,7 @@ The answers are only in the source code. This repo is a structured record of the
 
 ## Notes
 
-### Async RL Training
+### [Async RL Training](docs-en/async-rl/)
 
 Comparative analysis of three frameworks' design choices in async RL training, covering 4 core dimensions from the [HuggingFace Async RL Survey](https://huggingface.co/blog/async-rl-training-landscape): Rollout Buffer, Weight Synchronization, Staleness Management, and Partial Rollout.
 

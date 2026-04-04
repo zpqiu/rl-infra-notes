@@ -19,7 +19,7 @@ LLM 强化学习训练基础设施的**源码级**深度分析笔记。不止于
 
 ## Notes
 
-### Async RL Training
+### [Async RL Training](docs/async-rl/)
 
 对比分析三个框架在异步 RL 训练中的设计选择，覆盖 [HuggingFace Async RL Survey](https://huggingface.co/blog/async-rl-training-landscape) 的 4 个核心维度：Rollout Buffer、权重同步、Staleness 管理、Partial Rollout。
 
