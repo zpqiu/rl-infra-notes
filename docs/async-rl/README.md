@@ -6,13 +6,11 @@
 
 <p align="center">
   <a href="async-rl-comparison-slides.html">
-    <img src="https://github.com/user-attachments/assets/placeholder-timeline" alt="Scheduling × Buffer × Weight Sync — Full Timeline" width="900">
+    <img src="async-rl-timeline.jpg" alt="Scheduling × Buffer × Weight Sync — Full Timeline" width="900">
   </a>
 </p>
 
-> **👆 占位图** — 请将 HTML slides 中 "调度 × Buffer × 权重同步 —— 全景时间线" 页面的截图保存为 `assets/timeline-overview.png`，然后替换上方链接。
->
-> 交互版请直接打开 **[async-rl-comparison-slides.html](async-rl-comparison-slides.html)**（支持键盘翻页）。
+> 点击图片打开交互版 **[async-rl-comparison-slides.html](async-rl-comparison-slides.html)**（支持键盘翻页）。
 
 三个框架在同一张时间线上的核心区别：
 

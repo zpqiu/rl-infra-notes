@@ -6,13 +6,11 @@
 
 <p align="center">
   <a href="async-rl-comparison-slides-en.html">
-    <img src="https://github.com/user-attachments/assets/placeholder-timeline" alt="Scheduling × Buffer × Weight Sync — Full Timeline" width="900">
+    <img src="../../docs/async-rl/async-rl-timeline.jpg" alt="Scheduling × Buffer × Weight Sync — Full Timeline" width="900">
   </a>
 </p>
 
-> **👆 Placeholder** — Save a screenshot of the "Scheduling × Buffer × Weight Sync — Full Timeline" slide as `assets/timeline-overview.png`, then update the link above.
->
-> For the interactive version, open **[async-rl-comparison-slides-en.html](async-rl-comparison-slides-en.html)** directly (keyboard nav supported).
+> Click the image to open the interactive **[async-rl-comparison-slides-en.html](async-rl-comparison-slides-en.html)** (keyboard nav supported).
 
 Core differences across three frameworks on a single timeline:
 
