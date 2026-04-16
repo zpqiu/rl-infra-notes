@@ -38,6 +38,7 @@ FP8 训练和推理中的量化范围、scale 格式、通信精度等细节分�
 | [fp8_param_gather 详解](docs/fp8/fp8-param-gather.md) | Megatron-LM | FP8 all-gather 通信优化、参数更新流程对比 |
 | [FP8 Blockwise Scale 分析](docs/fp8/fp8_blockwise_scale_analysis.md) | vLLM | DeepGEMM UE8M0 vs FP32 scale、kernel dispatch 优先级 |
 | [MoE Router Dtype 分析](docs/fp8/megatron_moe_router_dtype_analysis.md) | Megatron-LM + vLLM | Router 全链路 dtype 追踪（训练 vs 推理）、bf16 topk 精度风险 |
+| [MoE Unpermute 非确定性分析](docs/fp8/moe_unpermute_determinism.md) | Megatron-LM + TE | scatter_add_ 非确定性根因、TE gather-reduce Triton kernel、row_id_map 3-pass 构建 |
 
 ### 🌐 English Translations
 
