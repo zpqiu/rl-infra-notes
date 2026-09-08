@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3.8-Flash-Next 文本主干结构拆解</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="deck.css">
+</head>
+<body>
+  <main id="viewport" aria-live="polite">
+    <section class="slide title-slide active" aria-label="Title">
+      <div class="accent-rule"></div>
+      <div class="kicker">Qwen4 experimental architecture</div>
+      <h1>Qwen3.8-Flash-Next<br>文本主干结构拆解</h1>
+      <p class="subhead">GR、GDN recurrence、QSA Indexer 与 N-gram / PLE 的前向路径</p>
+      <div class="topics"><span>GR</span><span>GDN</span><span>QSA</span><span>N-gram / PLE</span></div>
+      <svg class="title-art" viewBox="0 0 390 590" aria-hidden="true">
+        <defs><linearGradient id="title-gradient" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f2aa67"/><stop offset=".52" stop-color="#83b7e8"/><stop offset="1" stop-color="#c8a9e6"/></linearGradient></defs>
+        <path d="M60 40 C300 100 80 230 315 295 C100 350 315 480 90 550" fill="none" stroke="url(#title-gradient)" stroke-width="8"/>
+        <g fill="#edf5f7">
+          <circle cx="60" cy="40" r="12"/><circle cx="315" cy="295" r="12"/><circle cx="90" cy="550" r="12"/>
+        </g>
+        <g fill="none" stroke="#83b7e8" stroke-width="2">
+          <circle cx="170" cy="155" r="52"/><circle cx="170" cy="155" r="79"/><circle cx="225" cy="420" r="54"/><circle cx="225" cy="420" r="82"/>
+        </g>
+      </svg>
+      <div class="source">范围：text backbone；暂不展开 Vision encoder 与 MTP</div>
+      <div class="page-no">01 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="Overview positioning">
+      <header class="slide-header">
+        <div><div class="kicker">01 · Overview</div><h2>相对 Qwen3.5，Flash-Next 改了四条主路径</h2></div>
+        <div class="chapter-no">ARCHITECTURE DELTA</div>
+      </header>
+      <div class="two-col">
+        <div class="visual">
+          <div class="overview-map">
+            <div class="base"><span>Qwen3.5 text backbone</span><strong>→ Qwen3.8-Flash-Next</strong></div>
+            <div class="change-row" style="--accent:var(--orange)"><div class="old">Residual [d]</div><div class="arrow">→</div><div class="new">Gated Residual [4d]<small>GR Read 聚合；GR Write 分路写回</small></div></div>
+            <div class="change-row" style="--accent:var(--green)"><div class="old">GDN hybrid</div><div class="arrow">→</div><div class="new">GDN + sigmoid output gate<small>固定大小 recurrent state；每 4 层占 3 层</small></div></div>
+            <div class="change-row" style="--accent:var(--blue)"><div class="old">Full attention</div><div class="arrow">→</div><div class="new">Qwen Sparse Attention<small>4-token block Indexer + sparse exact attention</small></div></div>
+            <div class="change-row" style="--accent:var(--purple)"><div class="old">Vocabulary emb.</div><div class="arrow">＋</div><div class="new">N-gram embedding + PLE<small>Layer 2 额外注入 host-resident parameter lookup</small></div></div>
+          </div>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">四个模块分别修改 residual state、token mixer、attention candidate set 与输入侧参数容量。</p>
+          <div class="bullets" style="--accent:var(--blue)">
+            <div class="bullet"><div><strong>Residual path：</strong>hidden width 仍为 2560；跨层 residual state 扩展为 4×2560。</div></div>
+            <div class="bullet"><div><strong>Token mixing：</strong>GDN 保存有限维递推状态；QSA 周期性访问原始 token states。</div></div>
+            <div class="bullet"><div><strong>Parameter lookup：</strong>N-gram 表增加 51B 非激活参数，查表结果仅在 Layer 2 注入。</div></div>
+          </div>
+          <div class="metric-row">
+            <div class="metric" style="--accent:var(--orange)"><div class="value">125B</div><div class="label">main model</div></div>
+            <div class="metric" style="--accent:var(--blue)"><div class="value">6B</div><div class="label">active / token</div></div>
+            <div class="metric" style="--accent:var(--purple)"><div class="value">+51B</div><div class="label">N-gram table</div></div>
+            <div class="metric" style="--accent:var(--green)"><div class="value">262K</div><div class="label">native context</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="source">Source: Qwen3.8-Flash-Next technical report §1; official checkpoint config</div><div class="page-no">02 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="Official architecture overview">
+      <header class="slide-header">
+        <div><div class="kicker">01 · Overview</div><h2>48 层按 [GDN, GDN, GDN, QSA] 重复 12 次</h2></div>
+        <div class="chapter-no">48-LAYER BACKBONE</div>
+      </header>
+      <div class="two-col">
+        <div class="visual light visual-pad"><img src="assets/qwen38-architecture.png" alt="Official Qwen3.8-Flash-Next architecture diagram"></div>
+        <div class="detail">
+          <p class="detail-lead">每个 decoder layer 仍包含 token mixer 与 MoE；两者都通过 GR 接入 4d residual state。</p>
+          <div class="bullets" style="--accent:var(--green)">
+            <div class="bullet"><div><strong>Token mixer schedule：</strong><code>3×GDN + 1×QSA</code> 构成一个 4-layer block。</div></div>
+            <div class="bullet"><div><strong>Layer forward：</strong><code>GR Read → mixer → GR Write → GR Read → MoE → GR Write</code>。</div></div>
+            <div class="bullet"><div><strong>PLE placement：</strong><code>ple_layer_ids=[2]</code> 为 1-indexed；注入发生在 Layer 2 第一次 GR Read 之前。</div></div>
+            <div class="bullet"><div><strong>Final mixer：</strong>最后一次 GR Read 只做 combine，将 <span class="math-inline" data-tex="[B,T,4d]"></span> 还原为 <span class="math-inline" data-tex="[B,T,d]"></span>。</div></div>
+          </div>
+          <div class="chipline"><span>4 residual streams</span><span>512 experts</span><span>10 routed + 1 shared</span></div>
+        </div>
+      </div>
+      <div class="source">Source: Qwen official architecture diagram; technical report Fig. 1</div><div class="page-no">03 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="Gated Residual">
+      <header class="slide-header">
+        <div><div class="kicker">03 · Gated Residual</div><h2>GR Read: 4d → d；GR Write: d → 4d</h2></div>
+        <div class="chapter-no">READ · MIX · WRITE</div>
+      </header>
+      <div class="two-col">
+        <div class="visual visual-pad">
+          <svg class="diagram" viewBox="0 0 700 510" role="img" aria-label="Four residual branches read into one sublayer and written back">
+            <defs><marker id="arrow-gr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#88a6ba"/></marker></defs>
+            <text x="36" y="44" fill="#9fb3c1" font-size="18">Expanded Residual</text>
+            <foreignObject x="205" y="20" width="190" height="34"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math left" data-tex="H\in\mathbb{R}^{4d}"></div></foreignObject>
+            <g stroke="#35546b" stroke-width="2">
+              <line x1="64" y1="105" x2="380" y2="105"/><line x1="64" y1="185" x2="380" y2="185"/>
+              <line x1="64" y1="265" x2="380" y2="265"/><line x1="64" y1="345" x2="380" y2="345"/>
+            </g>
+            <g font-size="17" font-weight="700">
+              <rect x="55" y="79" width="145" height="52" rx="15" fill="#162c41" stroke="#f2aa67"/><text x="77" y="112" fill="#edf5f7">Branch 0</text>
+              <rect x="55" y="159" width="145" height="52" rx="15" fill="#162c41" stroke="#83b7e8"/><text x="77" y="192" fill="#edf5f7">Branch 1</text>
+              <rect x="55" y="239" width="145" height="52" rx="15" fill="#162c41" stroke="#a9d5ad"/><text x="77" y="272" fill="#edf5f7">Branch 2</text>
+              <rect x="55" y="319" width="145" height="52" rx="15" fill="#162c41" stroke="#c8a9e6"/><text x="77" y="352" fill="#edf5f7">Branch 3</text>
+            </g>
+            <g fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gr)">
+              <path d="M205 105 C285 105 300 150 380 193"/><path d="M205 185 C285 185 300 190 380 213"/>
+              <path d="M205 265 C285 265 300 245 380 233"/><path d="M205 345 C285 345 300 285 380 253"/>
+            </g>
+            <rect x="377" y="167" width="135" height="112" rx="20" fill="#2b2430" stroke="#f2aa67" stroke-width="2"/>
+            <text x="411" y="207" fill="#f2aa67" font-size="20" font-weight="750">GR Read</text>
+            <text x="401" y="239" fill="#d8e3e8" font-size="15">element-wise gate</text>
+            <text x="409" y="262" fill="#9fb3c1" font-size="14">mean over 4</text>
+            <line x1="512" y1="223" x2="565" y2="223" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gr)"/>
+            <rect x="565" y="178" width="106" height="90" rx="18" fill="#162c41" stroke="#a9d5ad" stroke-width="2"/>
+            <text x="586" y="215" fill="#edf5f7" font-size="18" font-weight="740">GDN /</text><text x="589" y="240" fill="#edf5f7" font-size="18" font-weight="740">QSA / MoE</text>
+            <path d="M618 269 L618 412 L450 412" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gr)"/>
+            <rect x="315" y="380" width="135" height="65" rx="18" fill="#1b2a3b" stroke="#83b7e8" stroke-width="2"/>
+            <text x="339" y="420" fill="#83b7e8" font-size="20" font-weight="750">GR Write</text>
+            <g fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gr)">
+              <path d="M315 412 C255 412 255 105 205 105"/><path d="M315 412 C268 412 268 185 205 185"/>
+              <path d="M315 412 C280 412 280 265 205 265"/><path d="M315 412 C293 412 293 345 205 345"/>
+            </g>
+            <text x="56" y="472" fill="#9fb3c1" font-size="16">原始 H 直通；子层输出 y 按 branch scalar gate 写回</text>
+          </svg>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">子层接口保持 d=2560；只有跨层保存的 residual state 扩展到 4d。</p>
+          <div class="bullets" style="--accent:var(--orange)">
+            <div class="bullet"><div><strong>Group RMSNorm：</strong>对 4 个 2560-d branch 分别计算 RMS，避免 branch scale 相互耦合。</div></div>
+            <div class="bullet"><div><strong>Read gate：</strong><span class="math-inline" data-tex="g_{\mathrm{read}}\in\mathbb{R}^{B\times T\times4\times d}"></span>，逐 branch、逐 channel 加权后在 branch 维求均值。</div></div>
+            <div class="bullet"><div><strong>Write gate：</strong><span class="math-inline" data-tex="g_{\mathrm{write}}\in\mathbb{R}^{B\times T\times4}"></span>，每路用一个标量缩放同一子层输出 <span class="math-inline" data-tex="y"></span>。</div></div>
+            <div class="bullet"><div><strong>Identity path：</strong>更新是 <span class="math-inline" data-tex="H+\Delta H"></span>；未经归一化的 <span class="math-inline" data-tex="H"></span> 保持直通。</div></div>
+          </div>
+          <div class="formula" style="--accent:var(--orange)"><div data-tex="\begin{aligned}h&amp;=\operatorname{mean}_{i=1}^{4}\!\left(g_{\mathrm{read},i}\odot\operatorname{RMSNorm}(H_i)\right)\\H_i&amp;\leftarrow H_i+g_{\mathrm{write},i}\,y\end{aligned}" data-display="true"></div></div>
+        </div>
+      </div>
+      <div class="source">Source: Qwen technical report §2.2; Transformers Qwen4ExpTextGatedResidual</div><div class="page-no">04 / 10</div>
+    </section>
+
+    <section class="slide gdn-slide" aria-label="Gated DeltaNet">
+      <header class="slide-header">
+        <div><div class="kicker">04 · Gated DeltaNet</div><h2>GDN 的一步递推：decay → delta update → read</h2></div>
+        <div class="chapter-no">ONE RECURRENT STEP</div>
+      </header>
+      <div class="two-col">
+        <div class="visual visual-pad">
+          <svg class="diagram" viewBox="0 0 700 510" role="img" aria-label="A single token step of Gated DeltaNet recurrence">
+            <defs><marker id="arrow-gdn" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#88a6ba"/></marker></defs>
+            <text x="30" y="30" fill="#9fb3c1" font-size="16">sequence position t</text>
+            <rect x="28" y="49" width="155" height="62" rx="16" fill="#172c41" stroke="#83b7e8" stroke-width="2"/>
+            <foreignObject x="35" y="56" width="140" height="27"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="\text{current hidden }x_t"></div></foreignObject>
+            <text x="105" y="97" text-anchor="middle" fill="#a9bdc8" font-size="13">不是 BOS / sequence 起点</text>
+            <path d="M183 80 L220 80" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <rect x="222" y="39" width="205" height="84" rx="16" fill="#203448" stroke="#83b7e8"/>
+            <text x="325" y="62" text-anchor="middle" fill="#edf5f7" font-size="17" font-weight="750">linear projections</text>
+            <foreignObject x="230" y="73" width="190" height="22"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="q_t,k_t,v_t\to\operatorname{Conv1d}(k=4)"></div></foreignObject>
+            <foreignObject x="230" y="95" width="190" height="22"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="\alpha_t,\beta_t,z_t\leftarrow x_t"></div></foreignObject>
+            <path d="M278 123 C278 148 303 153 303 182" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+
+            <rect x="28" y="185" width="155" height="82" rx="17" fill="#192d3e" stroke="#a9d5ad" stroke-width="2"/>
+            <foreignObject x="35" y="196" width="140" height="30"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="S_{t-1}\in\mathbb{R}^{d_k\times d_v}"></div></foreignObject>
+            <text x="105" y="239" text-anchor="middle" fill="#a9bdc8" font-size="14">由 prefix 累积的 state</text>
+            <text x="105" y="257" text-anchor="middle" fill="#a9bdc8" font-size="13">per value head</text>
+            <path d="M183 226 L223 226" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <rect x="225" y="185" width="155" height="82" rx="17" fill="#24352f" stroke="#a9d5ad" stroke-width="2"/>
+            <text x="303" y="211" text-anchor="middle" fill="#a9d5ad" font-size="17" font-weight="750">① global decay</text>
+            <foreignObject x="235" y="224" width="136" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="\widetilde S_{t-1}=\alpha_tS_{t-1}"></div></foreignObject>
+            <foreignObject x="235" y="248" width="136" height="23"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="\alpha_t\in(0,1)\;\text{，整张矩阵缩放}"></div></foreignObject>
+
+            <path d="M380 226 L416 226" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <path d="M355 117 C355 144 470 145 470 180" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <rect x="418" y="176" width="250" height="101" rx="17" fill="#2b2935" stroke="#c8a9e6" stroke-width="2"/>
+            <text x="543" y="202" text-anchor="middle" fill="#c8a9e6" font-size="17" font-weight="750">② predict → delta</text>
+            <foreignObject x="440" y="214" width="206" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="\widehat v_t=\widetilde S_{t-1}^{\top}k_t"></div></foreignObject>
+            <foreignObject x="440" y="239" width="206" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="\delta_t=\beta_t(v_t-\widehat v_t)"></div></foreignObject>
+            <text x="543" y="270" text-anchor="middle" fill="#a9bdc8" font-size="12">只写当前 key 已有联想的误差</text>
+
+            <path d="M543 277 L543 306 L383 306 L383 326" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <path d="M303 267 L303 306 L335 306 L335 326" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <rect x="225" y="329" width="230" height="78" rx="17" fill="#293126" stroke="#a9d5ad" stroke-width="2"/>
+            <text x="340" y="355" text-anchor="middle" fill="#a9d5ad" font-size="17" font-weight="750">③ rank-1 update</text>
+            <foreignObject x="245" y="367" width="190" height="32"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="S_t=\widetilde S_{t-1}+k_t\delta_t^{\top}"></div></foreignObject>
+
+            <path d="M455 368 L491 368" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <path d="M397 117 C397 145 624 140 624 327" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-gdn)"/>
+            <rect x="493" y="329" width="175" height="78" rx="17" fill="#1e3041" stroke="#83b7e8" stroke-width="2"/>
+            <text x="580" y="355" text-anchor="middle" fill="#83b7e8" font-size="17" font-weight="750">④ read + output gate</text>
+            <foreignObject x="505" y="365" width="150" height="32"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="y_t=S_t^{\top}q_t;\ \sigma(z_t)"></div></foreignObject>
+
+            <rect x="28" y="436" width="640" height="52" rx="14" fill="#101f2e" stroke="#35546b"/>
+            <foreignObject x="48" y="442" width="250" height="22"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small left orange" data-tex="\text{unit-key example: }r=S^{\top}k"></div></foreignObject>
+            <foreignObject x="48" y="461" width="600" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small left" data-tex="r=[.20,.60]\xrightarrow{\alpha=.8}[.16,.48]\xrightarrow{\beta=.5,\,v=[1,.2]}\delta=[.42,-.14]\Rightarrow r'=[.58,.34]"></div></foreignObject>
+          </svg>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">图中的 t 是同一 sequence 内的当前位置；递推在所有 token 上按因果顺序重复。</p>
+          <div class="bullets" style="--accent:var(--green)">
+            <div class="bullet"><div><strong>State carried across tokens：</strong><span class="math-inline" data-tex="S_{t-1}"></span> 来自 prefix；不是从当前 token 的圆点重新开始。</div></div>
+            <div class="bullet"><div><strong>Local front-end：</strong><span class="math-inline" data-tex="q_t,k_t,v_t"></span> 还包含 depthwise causal Conv1d 对 <span class="math-inline" data-tex="x_{t-3:t}"></span> 的局部混合。</div></div>
+            <div class="bullet"><div><strong>Decay <span class="math-inline" data-tex="\alpha_t"></span>：</strong>先对整个 state 衰减，控制该 head 的全局记忆寿命。</div></div>
+            <div class="bullet"><div><strong>Delta <span class="math-inline" data-tex="\beta_t"></span>：</strong>先读出 key <span class="math-inline" data-tex="k_t"></span> 当前关联的值，再把 prediction error 按 <span class="math-inline" data-tex="\beta_t"></span> 写回。</div></div>
+            <div class="bullet"><div><strong>Read / output：</strong><span class="math-inline" data-tex="q_t"></span> 从更新后的 <span class="math-inline" data-tex="S_t"></span> 读取；结果经 RMSNorm、<span class="math-inline" data-tex="\sigma(z_t)"></span> 和 out projection。</div></div>
+          </div>
+          <div class="formula" style="--accent:var(--green)"><div data-tex="\begin{aligned}\alpha_t&amp;=\exp\!\left[-\exp(A)\,\operatorname{softplus}(W_\alpha x_t+b_\alpha)\right]\\\beta_t&amp;=\sigma(W_\beta x_t),\qquad S_t\in\mathbb{R}^{128\times128}\;/\;\text{V-head}\end{aligned}" data-display="true"></div></div>
+        </div>
+      </div>
+      <div class="source">Source: Qwen technical report §2.1.1, Eq. 1–11; implementation uses a d_k × d_v state convention</div><div class="page-no">05 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="Qwen Sparse Attention">
+      <header class="slide-header">
+        <div><div class="kicker">05 · Qwen Sparse Attention</div><h2>Block-level Indexer 选候选，Sparse Core 做精确 Attention</h2></div>
+        <div class="chapter-no">INDEXER + CORE</div>
+      </header>
+      <div class="two-col">
+        <div class="visual light visual-pad"><img src="assets/qsa-figure.png" alt="Qwen Sparse Attention overview from the technical report"></div>
+        <div class="detail">
+          <p class="detail-lead">Indexer 只构造 sparse mask；QSA 的 value aggregation 仍由标准 softmax attention 完成。</p>
+          <div class="bullets" style="--accent:var(--blue)">
+            <div class="bullet"><div><strong>Block key：</strong>连续 4 个未加 RoPE 的 raw K 取均值并 RMSNorm，再使用 block 起点 position 施加 Partial RoPE。</div></div>
+            <div class="bullet"><div><strong>Indexer score：</strong>4 个 query heads 计算 <span class="math-inline" data-tex="\frac{1}{\sqrt{128}}\sum_{h=1}^{4}\operatorname{ReLU}(q_h^\top k_b)"></span>。</div></div>
+            <div class="bullet"><div><strong>Selection：</strong>最多选择 512 个完整 block，展开为最多 2048 个 token；不完整 causal tail 始终保留。</div></div>
+            <div class="bullet"><div><strong>Sparse Core：</strong>24Q / 2KV GQA 在 <span class="math-inline" data-tex="M_{\mathrm{causal}}\land M_{\mathrm{indexer}}"></span> 上计算精确 softmax。</div></div>
+          </div>
+          <div class="formula" style="--accent:var(--blue)"><div data-tex="\begin{aligned}\text{Indexer:}&amp;\quad O(T^2/4)\\\text{Sparse Core:}&amp;\quad O(T\cdot2048)\end{aligned}" data-display="true"></div></div>
+        </div>
+      </div>
+      <div class="source">Source: Qwen technical report Fig. 3 and §2.1.2</div><div class="page-no">06 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="QSA Indexer training">
+      <header class="slide-header">
+        <div><div class="kicker">05 · QSA Training</div><h2>Indexer 先 dense distillation，再切换到 sparse CPT</h2></div>
+        <div class="chapter-no">TWO-STAGE CPT</div>
+      </header>
+      <div class="two-col">
+        <div class="visual">
+          <div class="stage-flow">
+            <div class="stage" style="--accent:var(--orange)">
+              <div class="stage-no">Stage 1</div>
+              <div class="stage-body"><strong>Dense Distillation</strong>Full Attention 多头概率 → token relevance → 4-token MaxPool → all-block KL。只更新 Indexer。</div>
+            </div>
+            <div class="stage-arrow">↓ 先建立 block-level relevance，再切换到 TopK mask</div>
+            <div class="stage" style="--accent:var(--blue)">
+              <div class="stage-no">Stage 2</div>
+              <div class="stage-body"><strong>Sparse Joint Training</strong>LM loss 让 backbone 适应 TopK 上下文；selected-block KL 继续校准 Indexer。</div>
+            </div>
+          </div>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">LM loss 可更新被选中的 sparse attention 路径，但梯度不能穿过离散 TopK 改变候选集合。</p>
+          <div class="bullets" style="--accent:var(--blue)">
+            <div class="bullet"><div><strong>Stage 1：</strong>1,000 steps，8×256K tokens/step，约 2B tokens，<span class="math-inline" data-tex="\mathrm{LR}=10^{-3}"></span>。</div></div>
+            <div class="bullet"><div><strong>Stage 2：</strong>8,000 steps，96×256K tokens/step，约 200B tokens，<span class="math-inline" data-tex="\mathrm{LR}=2.5\times10^{-5}"></span>。</div></div>
+            <div class="bullet"><div><strong>Selected-block KL：</strong>Stage 2 只对已选 block 校准分数；未选 block 当步没有直接监督。</div></div>
+          </div>
+          <div class="formula" style="--accent:var(--blue)"><div data-tex="\begin{aligned}\text{Stage 1: }&amp;D_{\mathrm{KL}}\!\left(\hat a_{i,:}\,\middle\|\,\operatorname{softmax}(I_{i,:})\right)\\\text{Stage 2: }&amp;D_{\mathrm{KL}}\!\left(\hat a_{i,B_i}\,\middle\|\,\operatorname{softmax}(I_{i,B_i})\right)\end{aligned}" data-display="true"></div></div>
+        </div>
+      </div>
+      <div class="source">Source: Qwen technical report §2.1.2, Eq. 17–20; joint-loss weighting and stop-gradient details are not disclosed</div><div class="page-no">07 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="N-gram embedding lookup">
+      <header class="slide-header">
+        <div><div class="kicker">07 · N-gram Embedding</div><h2>16 个地址并行查表，concat 为 2560-d PLE embedding</h2></div>
+        <div class="chapter-no">HASH + LOOKUP</div>
+      </header>
+      <div class="two-col">
+        <div class="visual visual-pad">
+          <svg class="diagram" viewBox="0 0 700 510" role="img" aria-label="N-gram hashing and embedding table lookup">
+            <defs><marker id="arrow-ng" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#88a6ba"/></marker></defs>
+            <text x="38" y="42" fill="#9fb3c1" font-size="17">local token context</text>
+            <g font-size="19" text-anchor="middle">
+              <rect x="38" y="68" width="110" height="58" rx="15" fill="#172c41" stroke="#83b7e8"/><foreignObject x="55" y="82" width="76" height="30"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="x_{t-2}"></div></foreignObject>
+              <rect x="164" y="68" width="110" height="58" rx="15" fill="#172c41" stroke="#83b7e8"/><foreignObject x="181" y="82" width="76" height="30"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="x_{t-1}"></div></foreignObject>
+              <rect x="290" y="68" width="110" height="58" rx="15" fill="#172c41" stroke="#f2aa67"/><foreignObject x="307" y="82" width="76" height="30"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="x_t"></div></foreignObject>
+            </g>
+            <g stroke="#88a6ba" stroke-width="2" fill="none" marker-end="url(#arrow-ng)">
+              <path d="M219 126 L219 165 L180 165 L180 198"/><path d="M345 126 L345 165 L270 165 L270 198"/>
+              <path d="M93 126 L93 285 L160 285 L160 318"/><path d="M219 126 L219 285 L245 285 L245 318"/><path d="M345 126 L345 285 L330 285 L330 318"/>
+            </g>
+            <rect x="118" y="198" width="220" height="62" rx="17" fill="#2a2435" stroke="#c8a9e6" stroke-width="2"/>
+            <foreignObject x="135" y="205" width="186" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="\text{Bigram mixed id }H_2"></div></foreignObject>
+            <foreignObject x="135" y="232" width="186" height="25"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium purple" data-tex="x_tm_0\oplus x_{t-1}m_1"></div></foreignObject>
+            <rect x="98" y="318" width="270" height="62" rx="17" fill="#2a2435" stroke="#c8a9e6" stroke-width="2"/>
+            <foreignObject x="115" y="325" width="236" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="\text{Trigram mixed id }H_3"></div></foreignObject>
+            <foreignObject x="115" y="352" width="236" height="25"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium purple" data-tex="H_2\oplus x_{t-2}m_2"></div></foreignObject>
+            <g stroke="#88a6ba" stroke-width="2" fill="none" marker-end="url(#arrow-ng)"><path d="M338 229 L430 229"/><path d="M368 349 L430 349"/></g>
+            <rect x="430" y="176" width="220" height="230" rx="20" fill="#142a40" stroke="#c8a9e6" stroke-width="2"/>
+            <text x="540" y="208" text-anchor="middle" fill="#c8a9e6" font-size="18" font-weight="750">one physical table</text>
+            <g font-size="15">
+              <rect x="456" y="230" width="168" height="34" rx="7" fill="#5a476c"/><text x="540" y="252" text-anchor="middle" fill="#fff">8 × bigram rows</text>
+              <rect x="456" y="272" width="168" height="34" rx="7" fill="#715987"/><text x="540" y="294" text-anchor="middle" fill="#fff">8 × trigram rows</text>
+              <rect x="456" y="314" width="168" height="34" rx="7" fill="#293f54"/><foreignObject x="464" y="318" width="152" height="27"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="\mathrm{offset}+H\bmod p_j"></div></foreignObject>
+              <rect x="456" y="356" width="168" height="34" rx="7" fill="#203448"/><foreignObject x="464" y="360" width="152" height="27"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="[320001536,160]"></div></foreignObject>
+            </g>
+            <path d="M540 406 L540 450" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-ng)"/>
+            <foreignObject x="440" y="459" width="200" height="34"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="16\times160\xrightarrow{\mathrm{concat}}2560"></div></foreignObject>
+          </svg>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">Addressing 完全确定且不可学习；反向传播只更新本 batch 实际命中的 embedding rows。</p>
+          <div class="bullets" style="--accent:var(--purple)">
+            <div class="bullet"><div><strong>Head layout：</strong>8 个 bigram heads + 8 个 trigram heads；每个地址返回 160-d row。</div></div>
+            <div class="bullet"><div><strong>Tuple mixing：</strong>固定 seed 经 SplitMix64 产生 position-specific odd multipliers；token id 乘法结果按位 XOR。</div></div>
+            <div class="bullet"><div><strong>Multi-mod hash：</strong>mixed id 分别对 8 个不同 prime table sizes 取模；碰撞需要在多个 head 上同时对齐才会完全混淆。</div></div>
+            <div class="bullet"><div><strong>Storage：</strong>物理矩阵为 <span class="math-inline" data-tex="[320001536,160]"></span>；BF16 约 95.4 GiB，常驻 host memory 并做异步 prefetch。</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="source">Source: Transformers Qwen4-Exp reference implementation; official checkpoint config</div><div class="page-no">08 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="PLE injection">
+      <header class="slide-header">
+        <div><div class="kicker">07 · PLE Injection</div><h2>PLE：token-local branch gate + dilated depthwise Conv1d</h2></div>
+        <div class="chapter-no">DILATED DWCONV</div>
+      </header>
+      <div class="two-col">
+        <div class="visual visual-pad">
+          <svg class="diagram" viewBox="0 0 700 510" role="img" aria-label="PLE branch gating followed by a dilation-three depthwise causal convolution">
+            <defs><marker id="arrow-ple" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#88a6ba"/></marker></defs>
+            <text x="28" y="28" fill="#9fb3c1" font-size="15">A. token-local gating at position t</text>
+            <rect x="28" y="47" width="145" height="58" rx="15" fill="#2b2435" stroke="#c8a9e6" stroke-width="2"/>
+            <foreignObject x="40" y="52" width="120" height="26"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="E_t:\ \text{N-gram}"></div></foreignObject><foreignObject x="35" y="79" width="130" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small purple" data-tex="[d]\to K_t[4,d],\,V_t[d]"></div></foreignObject>
+            <rect x="28" y="140" width="145" height="58" rx="15" fill="#142a40" stroke="#f2aa67" stroke-width="2"/>
+            <foreignObject x="40" y="145" width="120" height="26"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="H_t:\ \text{residual}"></div></foreignObject><foreignObject x="35" y="172" width="130" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small orange" data-tex="[4,d]\to Q_t[4,d]"></div></foreignObject>
+            <g fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-ple)"><path d="M173 76 L233 76"/><path d="M173 169 L233 169"/></g>
+            <rect x="235" y="57" width="205" height="128" rx="17" fill="#203448" stroke="#83b7e8"/>
+            <text x="338" y="82" text-anchor="middle" fill="#83b7e8" font-size="16" font-weight="750">per-branch compatibility</text>
+            <foreignObject x="250" y="95" width="176" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="s_{t,i}=\langle q_{t,i},k_{t,i}\rangle/\sqrt d"></div></foreignObject>
+            <foreignObject x="250" y="121" width="176" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="g_{t,i}=\sigma(\operatorname{sign}(s)\sqrt{|s|})"></div></foreignObject>
+            <foreignObject x="250" y="147" width="176" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="U_{t,i}=g_{t,i}V_t"></div></foreignObject>
+            <path d="M440 121 L485 121" fill="none" stroke="#88a6ba" stroke-width="2" marker-end="url(#arrow-ple)"/>
+            <rect x="487" y="77" width="180" height="88" rx="17" fill="#24352f" stroke="#a9d5ad" stroke-width="2"/>
+            <foreignObject x="512" y="88" width="130" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math green" data-tex="\text{direct path }U_t"></div></foreignObject>
+            <foreignObject x="505" y="116" width="144" height="25"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="\text{4 branches share }V_t"></div></foreignObject>
+            <foreignObject x="505" y="139" width="144" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="\text{scalar gate }g_{t,i}\text{ differs}"></div></foreignObject>
+
+            <line x1="28" y1="230" x2="668" y2="230" stroke="#294257"/>
+            <text x="28" y="258" fill="#9fb3c1" font-size="15">B. DilatedDWConv(GroupRMSNorm(U)), one channel c</text>
+            <text x="28" y="282" fill="#a9bdc8" font-size="13">kernel=4, dilation=3, causal；depthwise 表示不同 channel 之间不混合</text>
+
+            <g fill="#172c41" stroke="#35546b" stroke-width="1.5">
+              <circle cx="62" cy="350" r="18"/><circle cx="118" cy="350" r="18"/><circle cx="174" cy="350" r="18"/>
+              <circle cx="230" cy="350" r="18"/><circle cx="286" cy="350" r="18"/><circle cx="342" cy="350" r="18"/>
+              <circle cx="398" cy="350" r="18"/><circle cx="454" cy="350" r="18"/><circle cx="510" cy="350" r="18"/>
+              <circle cx="566" cy="350" r="18"/>
+            </g>
+            <g>
+              <foreignObject x="42" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-9"></div></foreignObject><foreignObject x="98" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-8"></div></foreignObject><foreignObject x="154" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-7"></div></foreignObject>
+              <foreignObject x="210" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-6"></div></foreignObject><foreignObject x="266" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-5"></div></foreignObject><foreignObject x="322" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-4"></div></foreignObject>
+              <foreignObject x="378" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-3"></div></foreignObject><foreignObject x="434" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-2"></div></foreignObject><foreignObject x="490" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t-1"></div></foreignObject><foreignObject x="546" y="366" width="40" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small" data-tex="t"></div></foreignObject>
+            </g>
+            <g fill="#c8a9e6" stroke="#c8a9e6"><circle cx="62" cy="350" r="10"/><circle cx="230" cy="350" r="10"/><circle cx="398" cy="350" r="10"/><circle cx="566" cy="350" r="10"/></g>
+            <rect x="570" y="318" width="96" height="64" rx="14" fill="#2b2435" stroke="#c8a9e6" stroke-width="2"/>
+            <foreignObject x="580" y="326" width="76" height="26"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math" data-tex="C_{t,c}"></div></foreignObject><foreignObject x="575" y="350" width="86" height="25"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math small purple" data-tex="\mathrm{SiLU}(\Sigma w\widehat U)"></div></foreignObject>
+            <g fill="none" stroke="#c8a9e6" stroke-width="1.7" marker-end="url(#arrow-ple)">
+              <path d="M62 332 C155 287 500 286 570 333"/><path d="M230 332 C310 300 505 303 570 340"/>
+              <path d="M398 332 C458 312 525 318 570 346"/><path d="M566 350 L570 350"/>
+            </g>
+            <rect x="28" y="426" width="638" height="58" rx="15" fill="#101f2e" stroke="#35546b"/>
+            <foreignObject x="45" y="433" width="604" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium" data-tex="C_{t,c}=\operatorname{SiLU}\!\left(w_{0,c}\widehat U_{t,c}+w_{1,c}\widehat U_{t-3,c}+w_{2,c}\widehat U_{t-6,c}+w_{3,c}\widehat U_{t-9,c}\right)"></div></foreignObject>
+            <foreignObject x="90" y="457" width="514" height="28"><div xmlns="http://www.w3.org/1999/xhtml" class="svg-math medium green" data-tex="H_t\leftarrow H_t+U_t+C_t\qquad\text{(conv weights zero-initialized)}"></div></foreignObject>
+          </svg>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">Direct path 不再沿 T 维 mixing；卷积分支在门控后的 U 上增加稀疏局部 receptive field。</p>
+          <div class="bullets" style="--accent:var(--purple)">
+            <div class="bullet"><div><strong>Token-local gate：</strong>由 <span class="math-inline" data-tex="H_t"></span> 得到 Q、由 <span class="math-inline" data-tex="E_t"></span> 得到 K；二者只在同一位置、同一 branch 做点积，没有 softmax。</div></div>
+            <div class="bullet"><div><strong>Shared value：</strong>4 个 branch 使用同一 <span class="math-inline" data-tex="V_t\in\mathbb{R}^{d}"></span>，但分别乘 <span class="math-inline" data-tex="g_{t,i}"></span>。</div></div>
+            <div class="bullet"><div><strong>Dilated taps：</strong>输出 <span class="math-inline" data-tex="C_t"></span> 读取 <span class="math-inline" data-tex="\hat U_t,\hat U_{t-3},\hat U_{t-6},\hat U_{t-9}"></span>；最大回看距离为 9。</div></div>
+            <div class="bullet"><div><strong>Depthwise：</strong>10240 个 channel 各自拥有 4 个 temporal weights，不在 branch / hidden channel 之间做 mixing。</div></div>
+            <div class="bullet"><div><strong>Initialization：</strong>conv weights 为 0，所以初始前向只有 direct <code>U</code>；该局部分支由训练逐步打开。</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="source">Source: Transformers Qwen4-Exp reference implementation; technical report §2.3</div><div class="page-no">09 / 10</div>
+    </section>
+
+    <section class="slide" aria-label="Architecture synthesis">
+      <header class="slide-header">
+        <div><div class="kicker">Architecture summary</div><h2>四个模块分别作用于四类 state</h2></div>
+        <div class="chapter-no">MODULE BOUNDARIES</div>
+      </header>
+      <div class="two-col">
+        <div class="visual">
+          <div class="memory-stack">
+            <div class="memory-layer" style="--accent:var(--purple)"><strong>N-gram / PLE</strong><p>离散 tuple → host embedding rows → Layer 2 residual injection</p><em>lookup state</em></div>
+            <div class="memory-layer" style="--accent:var(--green)"><strong>GDN</strong><p>prefix → fixed-size <span class="math-inline" data-tex="S_t"></span>；每个 token 做 recurrent rank-1 update</p><em>O(1) decode state</em></div>
+            <div class="memory-layer" style="--accent:var(--blue)"><strong>QSA</strong><p>Indexer mask → selected raw token K/V → exact softmax</p><em>sparse KV access</em></div>
+            <div class="memory-layer" style="--accent:var(--orange)"><strong>GR</strong><p><span class="math-inline" data-tex="[B,T,4d]\leftrightarrow[B,T,d]"></span>；控制 sublayer 的 read / write</p><em>residual routing</em></div>
+          </div>
+        </div>
+        <div class="detail">
+          <p class="detail-lead">分析计算量、cache 或梯度路径时，应先确认讨论的是哪一种 state。</p>
+          <div class="bullets" style="--accent:var(--orange)">
+            <div class="bullet"><div><strong>GDN state：</strong>大小与 context length 无关，但它是有损的 prefix summary。</div></div>
+            <div class="bullet"><div><strong>QSA KV：</strong>仍保留 token-level K/V；稀疏化降低每个 query 实际访问的候选数。</div></div>
+            <div class="bullet"><div><strong>PLE table：</strong>增加参数容量但不增加 backbone hidden width；只对命中 rows 产生梯度。</div></div>
+            <div class="bullet"><div><strong>GR state：</strong>沿 depth 传播 4d residual，不是时间递推 cache。</div></div>
+          </div>
+          <div class="formula summary-formula" style="--accent:var(--orange)"><div data-tex="\begin{array}{c|c}\text{GDN · time recurrence}&amp;S_t\\\text{QSA · token retrieval}&amp;\mathrm{KV}\\\text{GR · depth recurrence}&amp;H^{(\ell)}\\\text{PLE · parameter lookup}&amp;E_{\mathrm{table}}\end{array}" data-display="true"></div></div>
+        </div>
+      </div>
+      <div class="source">Source: synthesis of Qwen technical report §§2.1–2.3 and the Qwen4-Exp reference implementation</div><div class="page-no">10 / 10</div>
+    </section>
+  </main>
+
+  <div class="nav" aria-label="Slide navigation"><button id="prev" aria-label="Previous slide">←</button><button id="next" aria-label="Next slide">→</button></div>
+  <div class="progress" aria-hidden="true"></div>
+  <script src="vendor/katex/katex.min.js"></script>
+  <script src="deck.js"></script>
+</body>
+</html>
