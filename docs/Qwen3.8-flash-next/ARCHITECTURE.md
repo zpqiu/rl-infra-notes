@@ -2,10 +2,6 @@
 
 本文对照官方架构图，以及 Hugging Face `transformers` 里的实现（`src/transformers/models/qwen4_exp/`，源文件是 `modular_qwen4_exp.py`）讲解模型结构。
 
-官方实现的类名前缀是 `Qwen4Exp*`：Qwen3.8-Flash-Next 是 **Qwen4 架构的提前开源预览**，角色等同于当年的 Qwen3-Next 之于 Qwen3.5。
-
-> 注意：`Qwen4ExpTextConfig` 里的默认值（`hidden=2048`、`40` 层等）只是代码 stub。下文规格以 **Qwen3.8-Flash-Next 真实 checkpoint** 为准。
-
 ---
 
 ## 1. Overview
@@ -33,7 +29,7 @@ Qwen3.8-Flash-Next 是一个多模态 MoE 模型，在 Qwen3.5 的 **GDN + Gated
 2. **Hybrid Block × L/4**：主干重复 12 次。每个 Hybrid Block 含 **3 个 GDN Layer + 1 个 QSA Layer**（图里把 QSA 画在块顶上，实现顺序是先 3 个 GDN 再 1 个 QSA）。
 3. 每个 Layer 的骨架相同：**GR Read →（GDN 或 QSA）→ GR Write → GR Read → MoE → GR Write**，残差流是加宽后的 **Expanded Residual**（4 路）。
 4. **N-gram Embedding** 只接到 **Layer 2** 的某个 GDN Layer 上。
-5. 主干结束后：**GR Read → Prediction Head**，旁边还有 **MTP Modules**（训练用的多 token 预测头）。
+5. 主干结束后：**GR Read → Prediction Head**，旁边还有 **MTP Modules**（训练时学习多 token 预测，推理时可作为 speculative decoding 的 draft modules）。
 
 ### 1.3 真实 checkpoint 规格
 
@@ -42,7 +38,7 @@ Qwen3.8-Flash-Next 是一个多模态 MoE 模型，在 Qwen3.5 的 **GDN + Gated
 | 类型 | Causal LM + Vision Encoder |
 | 主体参数 | 125B，每 token 激活 **6B** |
 | N-gram embedding | 额外 **51B**（可 CPU offload） |
-| MTP | 额外 **4B**（1 层，multi-step 训练） |
+| MTP | 额外 **4B**（1 层；训练多 token 预测，服务 speculative decoding） |
 | Hidden | 2560 |
 | Token / LM vocab | 248320（padded） |
 | 层数 | **48** |
@@ -184,6 +180,8 @@ H ← H + concat_4( g_write[i] · y )         # y 是子层输出 [B, T, d]
 
 `Qwen4ExpTextModel.hyper_connection_mixer` 也是一个 GR，但 `use_combine=False`：**只 Read、不 Write**，把 4 路合成一条 hidden，交给 LM head。
 
+GR 与 HC / mHC 的公式对照、static / dynamic / no-GR 的定义、结构消融、跨层路径、推理效率和稳定性实验见 [notes/gr.md](notes/gr.md)。
+
 ---
 
 ## 4. GDN Layer（图中 Gated DeltaNet）
@@ -202,13 +200,13 @@ H ← H + concat_4( g_write[i] · y )         # y 是子层输出 [B, T, d]
    `β = sigmoid(b)`，`g = −exp(A_log) · softplus(a + dt_bias)`。  
    V heads 是 QK 的 3 倍（48 vs 16），Q/K 做 `repeat_interleave`。  
    Prefill 走 chunked kernel，decode 走 recurrent kernel；Q/K 在 kernel 里 L2 normalize。
-4. **输出门**：`RMSNorm(y) * silu(z)`，再 `out_proj` 回到 `d`。
+4. **输出门**：`RMSNorm(y) * sigmoid(z)`，再 `out_proj` 回到 `d`。
 
 输出形状 `[B, T, 2560]`，再交给 GR Write 写回 4 路。
 
 ### 4.3 和 Qwen3.5 的差异
 
-几乎没有算法差异。Qwen4-Exp 只把 gated RMSNorm 的激活改成可配置（`output_gate_type`，默认仍是 `silu`）。
+主体仍沿用 Qwen3.5 的 Gated DeltaNet，但输出门有一处实际差异：Qwen4-Exp 把 gated RMSNorm 的激活改成可配置。代码在 `output_gate_type` 缺失时会 fallback 到 `hidden_act`（通常是 `silu`），而 **Qwen3.8-Flash-Next 真实 checkpoint 明确设置为 `sigmoid`**，与 technical report 的 bounded sigmoid output gate 一致。
 
 ---
 
@@ -218,7 +216,9 @@ H ← H + concat_4( g_write[i] · y )         # y 是子层输出 [B, T, d]
 
 ### 5.1 角色
 
-GDN 的 state 是有损压缩。QSA 负责在全上下文上做一次 **稀疏、精确** 的检索。和「逐 token 选 top-k」不同，QSA 先把序列收成 **micro-block**，在 block 级打分，再把选中的 block 展开成 token 做注意力。长序列上，这一层的计算/访存从 `O(T²)` 降到大约 `O(T · 2048)`。
+GDN 的 state 是有损压缩。QSA 负责在全上下文上做一次 **稀疏、精确** 的检索。和「逐 token 选 top-k」不同，QSA 先把序列收成 **micro-block**，在 block 级打分，再把选中的 block 展开成 token 做注意力。
+
+这里要把两段计算分开：Sparse Core Attention 的成本约为 `O(T · K)`，其中 `K=2048`；但轻量 Indexer 仍要让每个 query 给压缩后的 key blocks 打分，成本是 `O(T² / r)`，其中 `r=4`。因此完整 QSA 不是单纯的 `O(T · 2048)`；压缩让 Indexer 的常数和序列维缩小 4 倍，稀疏预算则降低真正 Attention 的成本。
 
 ### 5.2 两段式结构
 
@@ -258,6 +258,12 @@ hidden
 
 这一层 **仍然存 KV cache**（只是计算时每个 query 只 attend 到约 2048 个位置）。Indexer 自己也要 cache 所有 token 的 raw K，用来给后续 query 打分。
 
+### 5.5 Indexer 怎么训练
+
+`TopK → mask` 是离散路径，causal-LM loss 不能通过选中的 indices 更新 Indexer。QSA 因此在 256K CPT 中分两阶段训练：先冻结 backbone，用 Full Attention 的多头 attention distribution 构造 block-level teacher，对所有完整 blocks 做 1,000 steps KL distillation；再启用 TopK sparse attention，用 LM loss 让 backbone 适应稀疏上下文，同时在选中的 blocks 内继续用 KL 校准 Indexer，共同训练 8,000 steps。
+
+当前 Transformers 参考实现只包含 Indexer forward 和 sparse mask，不包含 teacher、KL 或这套训练 pipeline。完整公式、梯度边界和数值例子见 [notes/qsa.md](notes/qsa.md#7-indexer-为什么不能只靠-lm-loss-训练)。
+
 ---
 
 ## 6. MoE（图中每层都有的红色 MoE）
@@ -284,6 +290,8 @@ y = routed_sum + gated_shared
 
 论文名 **N-gram Embedding**，代码名 **PLE（Per-Layer Embedding）**。图上明确画了：只在 Layer 2 注入，接到一个 GDN Layer 上。
 
+完整的表布局、hash / collision、lookup / cache 和注入过程见 [notes/ple.md](notes/ple.md)。
+
 约束（`validate_architecture`）：
 
 - `ple_layer_ids` 是 **1-indexed**
@@ -292,14 +300,15 @@ y = routed_sum + gated_shared
 
 ### 7.1 在解决什么问题
 
-MoE 用「条件计算」扩容量，但 expert 必须常驻加速器。Embedding 查表几乎零 FLOPs，而且整张表可以放在 **host 内存**，lookup 下标提前算好、异步 prefetch。这是另一条扩参轴：Flash-Next 用一张约 **51B / ~90GiB** 的表，专门记局部短语（bigram / trigram）。
+MoE 用「条件计算」扩容量，但 expert 必须常驻加速器。Embedding 查表几乎零 FLOPs，而且整张表可以放在 **host 内存**，lookup 下标提前算好、异步 prefetch。这是另一条扩参轴：Flash-Next 用一张约 **51.2B / 95.4GiB BF16** 的表，专门记局部短语（bigram / trigram）。
 
 ### 7.2 Hash 查表（`Qwen4ExpTextNGramEmbedding`）
 
-- `ngram_size=3` → bigram + trigram
-- 每种 n-gram **8 个独立 hash head**，共 16 head
-- 每个 head 一张约 **2000 万** 的词表，大小取互不相同的素数（避免各 head 碰撞对齐）
-- hash：`token_id × 层相关奇数乘数`，再 XOR 各位置，再 `mod vocab`
+- `ngram_size=3` → bigram + trigram；每种 n-gram 8 个 head，共 16 head
+- 每个 head 的 embedding dim 是 160；逻辑上 16 张约 `20M×160` 的表，物理上拼成一张 `[320001536, 160]` 的 `nn.Embedding`
+- 先用 SplitMix64 从固定 seed 为三个相对位置生成奇数乘数；hash 是 `token_id × 位置乘数` 后 XOR
+- 每种 n-gram 只生成一个 mixed id，再对 8 个不同素数表长取模；这不是 8 个完全独立的 pre-hash
+- 单表允许 collision；不同素数避免同一次取模碰撞在所有 head 上对齐，但无法消除 XOR 阶段已经产生的 mixed-id collision
 - 跨 EOS **不混上下文**（shift 时用 EOS 填充）
 - 16 个头的向量 concat 成 `ple_embed_dim`（默认 = hidden 2560）
 
@@ -307,20 +316,22 @@ MoE 用「条件计算」扩容量，但 expert 必须常驻加速器。Embeddin
 
 ### 7.3 注入 GDN 层（`Qwen4ExpTextPLELayer`）
 
-查完表之后不是直接加到 token embedding 上，而是 **按 4 路残差做一次门控写入**：
+查完表之后不是直接加到 vocabulary embedding 上，而是在第 2 层 **GR Read 之前**，按 4 路 Expanded Residual 做门控写入：
 
 ```
 emb = NGramLookup(input_ids)
-K = RMSNorm(W_k(emb))     # 4 路各一份 key
-V = W_v(emb)              # 共享 value
-Q = RMSNorm(H)            # 当前 4 路 hidden 当 query
-s = ⟨K, Q⟩ / √d
-gate = sign(s) · √|s|
-H ← H + σ(gate) · V
-H ← H + DilatedDWConv( RMSNorm(σ(gate)·V) )   # dilation=3, kernel=4
+K = GroupRMSNorm(W_k(emb))     # [B,T,4,d]，4 路各一份 key
+V = W_v(emb)                   # [B,T,d]，4 路共享 value
+Q = GroupRMSNorm(H)            # [B,T,4,d]，当前 4 路 residual 当 query
+s = ⟨K, Q⟩ / √d                # [B,T,4,1]
+gate = σ(sign(s) · √|s|)
+U = gate · V                   # [B,T,4,d]
+H ← H + U + DilatedDWConv(GroupRMSNorm(U))
 ```
 
-膨胀卷积给局部词法一点「平滑」，kernel 按 dilation 拉长，cache 里另占 conv_state 槽位 1。
+这里没有跨 token 的 QK attention 或 softmax：每个 token 只用自己的 N-gram key 与四路 residual query 算四个独立 gate。同一个 value 以不同强度写进四路。之后正常的 GR Read 才把四路混成 GDN 输入。
+
+膨胀卷积是 10240 通道的 depthwise causal Conv1d，`kernel=4`、`dilation=3`，大致读取 `t,t-3,t-6,t-9`；cache 里占 `conv_states[1]`。卷积权重初始化为 0。
 
 ### 7.4 和 device_map
 
@@ -344,7 +355,7 @@ H_4way → hyper_connection_mixer（只 Read）→ [B, T, 2560] → lm_head → 
 
 ### 8.2 MTP Modules
 
-官方规格：**1 层 MTP，约 4B，multi-step 训练**。用来在训练时同时预测多个未来 token，加强规划/长程信号。
+官方规格：**1 层 MTP，约 4B**。训练时学习预测多个未来 token；推理时作为 draft modules 做 speculative decoding。technical report 的四步 speculative decoding 实验还会在多个 MTP prediction steps 之间复用 QSA 的 top-k indices，以降低 draft-model 开销，同时平均 accepted length 基本不变。
 
 **当前 `transformers` 的 `qwen4_exp` 实现不加载 MTP**：
 
@@ -399,7 +410,7 @@ QSA indexer 需要对 **全部历史位置** 做 RoPE，所以 cache 上还挂�
 | 残差 | 单流 Pre-LN | **4 流 Gated Residual** |
 | Embedding | 只有 vocab embedding | + Layer 2 的 **n-gram 查表** |
 | MLP | MoE（部分层可能 dense） | **每层都是 MoE**，expert 更窄（640）、激活更多（10+1） |
-| 长上下文代价 | full attention 层仍是满 KV 计算 | QSA 每 query 最多看 ~2048 token |
+| 长上下文代价 | full attention 层做完整 `QKᵀ` | Sparse Core 每 query 看 ~2048 token；Indexer 仍扫描约 `T/4` 个 blocks |
 | 视觉 | Qwen3.5 ViT | 基本相同 |
 
 一句话：
